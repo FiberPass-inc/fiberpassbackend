@@ -112,7 +112,9 @@ export async function verifyAuthChallenge(input: AuthVerifyInput): Promise<AuthV
   await challenge.save();
 
   const wallet = await ensureWalletForAddress(normalizedAddress);
-  await seedWalletDemoSessions(wallet.walletId);
+  if (env.DEMO_MODE) {
+    await seedWalletDemoSessions(wallet.walletId);
+  }
 
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);

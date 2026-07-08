@@ -65,10 +65,12 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
 });
 
 await mongoose.connect(env.MONGODB_URI);
-await seedDemoData();
+if (env.DEMO_MODE) {
+  await seedDemoData();
+}
 
 let demoTimer: NodeJS.Timeout | undefined;
-if (env.DEMO_AUTO_CHARGE) {
+if (env.DEMO_MODE && env.DEMO_AUTO_CHARGE) {
   demoTimer = setInterval(() => {
     chargeRandomActiveSession().catch((error) => console.warn('Demo auto-charge tick skipped', error));
   }, env.DEMO_CHARGE_INTERVAL_MS);

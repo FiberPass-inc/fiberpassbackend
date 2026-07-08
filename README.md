@@ -19,7 +19,7 @@ npm install
 npm run dev
 ```
 
-API runs on `http://localhost:4000` by default.
+API runs on `http://localhost:4000` by default. Product mode is the default: authenticated JoyID wallets start with no seeded sessions. Set `DEMO_MODE=true` to enable seeded demo data and `/demo/*` endpoints, and set `DEMO_AUTO_CHARGE=true` only when you want automated demo charges.
 
 ## Core endpoints
 
