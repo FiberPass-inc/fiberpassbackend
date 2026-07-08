@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 
 const walletSchema = new Schema(
   {
-    walletId: { type: String, required: true, unique: true, default: 'demo-wallet' },
+    walletId: { type: String, required: true, unique: true },
     connected: { type: Boolean, required: true, default: true },
     address: { type: String, required: true },
     balance: { type: Number, required: true, min: 0, default: 1240.5 },

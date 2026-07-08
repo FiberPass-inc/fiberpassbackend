@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
 
-export type FiberProviderKind = 'mock' | 'rpc';
+export type FiberProviderKind = 'rpc';
 export type FiberSessionStatus = 'pending' | 'active' | 'paused' | 'closing' | 'settled' | 'revoked' | 'expired' | 'failed';
 export type FiberSettlementReason = 'revoked' | 'settled' | 'expired';
 
@@ -89,103 +88,6 @@ export interface FiberProvider {
   getStatus(sessionId: string, networkSessionId?: string): Promise<FiberStatusResult>;
 }
 
-interface MockSessionState {
-  networkSessionId: string;
-  status: FiberSessionStatus;
-  allocatedMinor: number;
-  spentMinor: number;
-  currency: string;
-}
-
-export class MockFiberProvider implements FiberProvider {
-  readonly kind = 'mock' as const;
-  readonly network: string;
-  private sessions = new Map<string, MockSessionState>();
-
-  constructor(network = env.FIBER_NETWORK) {
-    this.network = network;
-  }
-
-  async createSession(input: FiberCreateSessionInput): Promise<FiberCreateSessionResult> {
-    const networkSessionId = 'mock_fiber_' + randomUUID().replace(/-/g, '').slice(0, 20);
-    this.sessions.set(input.localSessionId, {
-      networkSessionId,
-      status: 'active',
-      allocatedMinor: input.amountMinor,
-      spentMinor: 0,
-      currency: input.currency
-    });
-
-    return {
-      provider: this.kind,
-      network: this.network,
-      networkSessionId,
-      status: 'active',
-      proofId: 'mock_open_' + randomUUID().replace(/-/g, '').slice(0, 16)
-    };
-  }
-
-  async authorizeCharge(input: FiberAuthorizeChargeInput): Promise<FiberChargeResult> {
-    const state = this.sessions.get(input.sessionId);
-    if (state && state.status !== 'active') {
-      throw new Error('Mock Fiber session is not active.');
-    }
-    if (state && state.spentMinor + input.amountMinor > state.allocatedMinor) {
-      throw new Error('Mock Fiber session balance exceeded.');
-    }
-    if (state) state.spentMinor += input.amountMinor;
-
-    return {
-      provider: this.kind,
-      network: this.network,
-      authorized: true,
-      proofId: 'mock_charge_' + randomUUID().replace(/-/g, '').slice(0, 16)
-    };
-  }
-
-  async topUpSession(input: FiberTopUpInput): Promise<FiberTopUpResult> {
-    const state = this.sessions.get(input.sessionId);
-    if (state) state.allocatedMinor += input.amountMinor;
-
-    return {
-      provider: this.kind,
-      network: this.network,
-      proofId: 'mock_topup_' + randomUUID().replace(/-/g, '').slice(0, 16)
-    };
-  }
-
-  async revokeSession(input: FiberSettleInput): Promise<FiberSettleResult> {
-    const state = this.sessions.get(input.sessionId);
-    if (state) state.status = 'revoked';
-    return this.settledResult('mock_revoke_');
-  }
-
-  async settleSession(input: FiberSettleInput): Promise<FiberSettleResult> {
-    const state = this.sessions.get(input.sessionId);
-    if (state) state.status = input.reason === 'expired' ? 'expired' : 'settled';
-    return this.settledResult('mock_settle_');
-  }
-
-  async getStatus(sessionId: string, networkSessionId?: string): Promise<FiberStatusResult> {
-    const state = this.sessions.get(sessionId);
-    return {
-      provider: this.kind,
-      network: this.network,
-      status: state?.status ?? 'pending',
-      networkSessionId: state?.networkSessionId ?? networkSessionId
-    };
-  }
-
-  private settledResult(prefix: string): FiberSettleResult {
-    return {
-      provider: this.kind,
-      network: this.network,
-      settled: true,
-      proofId: prefix + randomUUID().replace(/-/g, '').slice(0, 16)
-    };
-  }
-}
-
 export class RpcFiberProvider implements FiberProvider {
   readonly kind = 'rpc' as const;
   readonly network: string;
@@ -200,7 +102,7 @@ export class RpcFiberProvider implements FiberProvider {
   async createSession(input: FiberCreateSessionInput): Promise<FiberCreateSessionResult> {
     const channelPeerId = typeof input.metadata?.fiberPeerId === 'string' ? input.metadata.fiberPeerId : env.FIBER_PEER_ID;
     if (!channelPeerId) {
-      throw new Error('FIBER_PEER_ID is required to open a real Fiber channel.');
+      throw new Error('FIBER_PEER_ID is required to open a Fiber channel.');
     }
 
     const raw = await this.rpc('open_channel', [{
@@ -223,7 +125,7 @@ export class RpcFiberProvider implements FiberProvider {
   async authorizeCharge(input: FiberAuthorizeChargeInput): Promise<FiberChargeResult> {
     const invoice = input.paymentRequest ?? (typeof input.metadata?.fiberInvoice === 'string' ? input.metadata.fiberInvoice : '');
     if (!invoice) {
-      throw new Error('A Fiber invoice/payment request is required for real Fiber charges.');
+      throw new Error('A Fiber invoice/payment request is required for Fiber charges.');
     }
 
     const raw = await this.rpc('send_payment', [{ invoice }]);
@@ -238,7 +140,7 @@ export class RpcFiberProvider implements FiberProvider {
 
   async topUpSession(input: FiberTopUpInput): Promise<FiberTopUpResult> {
     if (!input.networkSessionId) {
-      throw new Error('networkSessionId is required to top up a real Fiber session.');
+      throw new Error('networkSessionId is required to top up a Fiber session.');
     }
     const raw = await this.rpc('add_tlc', [{
       channel_id: input.networkSessionId,
@@ -270,7 +172,7 @@ export class RpcFiberProvider implements FiberProvider {
 
   private async shutdown(input: FiberSettleInput, reason: FiberSettlementReason): Promise<FiberSettleResult> {
     if (!input.networkSessionId) {
-      throw new Error('networkSessionId is required to close a real Fiber session.');
+      throw new Error('networkSessionId is required to close a Fiber session.');
     }
     const raw = await this.rpc('shutdown_channel', [{ channel_id: input.networkSessionId, force: reason === 'revoked' }]);
     return {
@@ -301,10 +203,7 @@ export class RpcFiberProvider implements FiberProvider {
 }
 
 export function createFiberProvider(): FiberProvider {
-  if (env.FIBER_PROVIDER === 'rpc') {
-    return new RpcFiberProvider({ rpcUrl: env.FIBER_RPC_URL, network: env.FIBER_NETWORK });
-  }
-  return new MockFiberProvider(env.FIBER_NETWORK);
+  return new RpcFiberProvider({ rpcUrl: env.FIBER_RPC_URL, network: env.FIBER_NETWORK });
 }
 
 export const fiberProvider = createFiberProvider();

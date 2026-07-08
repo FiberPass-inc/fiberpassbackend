@@ -5,7 +5,7 @@ import { ApiError } from '../lib/errors.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { writeAuditLog } from './audit.service.js';
 import type { AuthContext } from '../types/auth.js';
-import { ensureWalletForAddress, seedWalletDemoSessions, walletIdFromAddress, type WalletDto } from './session.service.js';
+import { ensureWalletForAddress, walletIdFromAddress, type WalletDto } from './session.service.js';
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -113,10 +113,6 @@ export async function verifyAuthChallenge(input: AuthVerifyInput): Promise<AuthV
   await challenge.save();
 
   const wallet = await ensureWalletForAddress(normalizedAddress);
-  if (env.DEMO_MODE) {
-    await seedWalletDemoSessions(wallet.walletId);
-  }
-
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   await AuthSessionModel.create({

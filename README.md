@@ -9,7 +9,7 @@ Node.js + TypeScript API for prepaid, revocable Fiber payment sessions.
 - JoyID EVM challenge-response auth
 - Server-Sent Events for live dashboard updates
 - Integer minor-unit accounting for money values
-- Pluggable Fiber provider: mock locally, JSON-RPC spike for real Fiber nodes
+- Fiber Network JSON-RPC provider only
 - Rate limiting, audit logs, request IDs, and production env validation
 
 ## Run Locally
@@ -21,15 +21,11 @@ npm install
 npm run dev
 ```
 
-API runs on `http://localhost:4000` by default.
-
-Product mode is the default: authenticated JoyID wallets start with no seeded sessions. Set `DEMO_MODE=true` to mount `/demo/*` endpoints and seeded demo data. `DEMO_MODE=true` is rejected in production.
+API runs on `http://localhost:4000` by default. A real Fiber RPC URL is required through `FIBER_RPC_URL`; the backend exposes only product endpoints backed by the configured Fiber RPC provider.
 
 ## Fiber Provider
 
-`FIBER_PROVIDER=mock` is the local default and keeps all network effects behind `MockFiberProvider`.
-
-`FIBER_PROVIDER=rpc` enables the JSON-RPC spike provider and requires `FIBER_RPC_URL`. Real channel opening also needs `FIBER_PEER_ID`, and real app charges need a Fiber invoice/payment request in charge metadata as `fiberInvoice`.
+`FIBER_PROVIDER=rpc` is the only supported provider. Configure `FIBER_RPC_URL`, `FIBER_PEER_ID`, and optional `FIBER_API_KEY` for your Fiber node.
 
 See `docs/fiber-network-spike.md` for integration notes.
 
@@ -57,8 +53,6 @@ All product endpoints are available at their current paths and under `/v1` alias
 - `POST /apps/:appId/api-keys/:keyId/revoke`
 - `GET /apps/:appId/charges`
 - `POST /apps/:appId/charges`
-
-Demo endpoints are mounted only when `DEMO_MODE=true`.
 
 ## Checks
 

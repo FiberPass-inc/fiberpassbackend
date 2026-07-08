@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { FilterQuery } from 'mongoose';
-import { seedSessions } from '../data/seed.js';
 import { ApiError } from '../lib/errors.js';
 import { liveEvents } from '../lib/liveEvents.js';
 import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, roundMoney, toMinorUnits } from '../lib/money.js';
@@ -10,8 +8,6 @@ import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
 import { writeAuditLog } from './audit.service.js';
 import { fiberProvider } from './fiberProvider.js';
 
-export const DEMO_WALLET_ID = 'demo-wallet';
-export const DEMO_WALLET_ADDRESS = '0x71C7656EC7ab88b098defB751B7401B5f6d14766';
 const DEFAULT_WALLET_BALANCE_MINOR = toMinorUnits('1240.50');
 const HISTORY_STATUSES: SessionStatus[] = ['settled', 'revoked', 'expired'];
 const OPEN_STATUSES: SessionStatus[] = ['active', 'paused'];
@@ -44,13 +40,13 @@ export interface VerifiedAppDto {
 
 const VERIFIED_APP_CATALOG: VerifiedAppDto[] = [
   {
-    id: 'fiber-ai-demo',
-    name: 'Fiber AI Demo',
+    id: 'fiber-ai-agent',
+    name: 'Fiber AI Agent',
     serviceAddress: '0xA17a00000000000000000000000000000000F1b3',
-    url: 'https://demo.fiberpass.app/ai',
+    url: 'https://ai.fiberpass.app',
     category: 'AI/API',
     trustLevel: 'verified',
-    description: 'Reference AI/API app for per-request Fiber micropayments.',
+    description: 'AI/API app for per-request Fiber micropayments.',
     defaultCharge: 0.02,
     defaultChargeMinor: toMinorUnits('0.02'),
     chargePolicy: '$0.02 per completed request',
@@ -72,13 +68,13 @@ const VERIFIED_APP_CATALOG: VerifiedAppDto[] = [
     permissions: ['Charge API calls', 'Read remaining balance']
   },
   {
-    id: 'fiber-storage-demo',
-    name: 'Fiber Storage Demo',
+    id: 'fiber-storage',
+    name: 'Fiber Storage',
     serviceAddress: '0xA17a00000000000000000000000000000000dB01',
     url: 'https://storage.fiberpass.app',
     category: 'Storage',
     trustLevel: 'reviewed',
-    description: 'Metered storage demo for bandwidth and object reads.',
+    description: 'Metered storage app for bandwidth and object reads.',
     defaultCharge: 0.01,
     defaultChargeMinor: toMinorUnits('0.01'),
     chargePolicy: '$0.01 per storage operation',
@@ -288,10 +284,6 @@ function newLog(type: string, amountMinor = 0, currency: string = CREATE_SESSION
   };
 }
 
-function normalizeSeedLogs(logs: Array<{ id: string; type: string; timestamp: string; amount: number; amountMinor?: number }>, currency: string): TransactionLogDto[] {
-  return logs.map((log) => ({ ...log, amountMinor: fallbackMinorUnits(log.amountMinor, log.amount, currency) }));
-}
-
 function prependLogs(
   session: { get: (path: string) => unknown; set: (path: string, value: unknown) => void },
   ...logs: TransactionLogDto[]
@@ -409,26 +401,6 @@ async function publishOverview(walletId: string): Promise<void> {
   liveEvents.publish('overview:' + walletId, await getSessionsOverview(walletId));
 }
 
-function seedForWallet(walletId: string, useFixedIds = false): Array<Record<string, unknown>> {
-  return seedSessions.map((session) => {
-    const spentMinor = toMinorUnits(String(session.spent), session.currency);
-    const limitMinor = toMinorUnits(String(session.limit), session.currency);
-    return {
-      ...session,
-      ownerWalletId: walletId,
-      publicId: useFixedIds ? session.publicId : newPublicId(),
-      spentMinor,
-      limitMinor,
-      platformFeeEstimateMinor: 0,
-      networkFeeEstimateMinor: 0,
-      fiberProvider: fiberProvider.kind,
-      fiberNetwork: fiberProvider.network,
-      fiberStatus: session.status === 'active' ? 'active' : session.status,
-      logs: normalizeSeedLogs(session.logs, session.currency)
-    };
-  });
-}
-
 export function getCreateSessionPolicy(): CreateSessionPolicyDto {
   return {
     limits: {
@@ -539,40 +511,6 @@ export async function ensureWalletForAddress(address: string): Promise<WalletRec
   }
 
   return wallet.toObject();
-}
-
-export async function seedWalletDemoSessions(walletId: string): Promise<void> {
-  const count = await SessionModel.countDocuments({ ownerWalletId: walletId });
-  if (count === 0) {
-    await SessionModel.insertMany(seedForWallet(walletId), { ordered: true });
-  }
-}
-
-export async function seedDemoData(): Promise<void> {
-  await WalletModel.findOneAndUpdate(
-    { walletId: DEMO_WALLET_ID },
-    {
-      $setOnInsert: {
-        walletId: DEMO_WALLET_ID,
-        connected: true,
-        address: DEMO_WALLET_ADDRESS,
-        balance: fromMinorUnits(DEFAULT_WALLET_BALANCE_MINOR),
-        balanceMinor: DEFAULT_WALLET_BALANCE_MINOR,
-        currency: 'USDC'
-      }
-    },
-    { upsert: true, new: true }
-  );
-
-  await SessionModel.updateMany(
-    { ownerWalletId: { $exists: false } },
-    { $set: { ownerWalletId: DEMO_WALLET_ID } }
-  );
-
-  const sessionCount = await SessionModel.countDocuments({ ownerWalletId: DEMO_WALLET_ID });
-  if (sessionCount === 0) {
-    await SessionModel.insertMany(seedForWallet(DEMO_WALLET_ID, true), { ordered: true });
-  }
 }
 
 async function getWalletDocument(walletId: string) {
@@ -1011,44 +949,6 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
   }
 }
 
-export async function chargeRandomActiveSession(): Promise<SessionsOverviewDto | null> {
-  const query: FilterQuery<SessionRecord> = { status: 'active', autoMicroCharges: true };
-  const sessions = await SessionModel.find(query).lean<SessionLike[]>();
-  if (sessions.length === 0) return null;
-
-  const target = sessions[Math.floor(Math.random() * sessions.length)];
-  const logTypes = [
-    'Continuous Data Stream Tick',
-    'API Inference Endpoint Charge',
-    'Agent Network Routing Query',
-    'Sub-second Layer-3 Gas Settlement',
-    'Micro-billing Stream Tick'
-  ];
-  const amountMinor = toMinorUnits(String((0.01 + Math.random() * 0.04).toFixed(6)));
-  const type = logTypes[Math.floor(Math.random() * logTypes.length)];
-
-  try {
-    return await chargeSession({ sessionId: target.publicId, amount: fromMinorUnits(amountMinor), type });
-  } catch (error) {
-    if (error instanceof ApiError && error.statusCode === 402) {
-      return getSessionsOverview(target.ownerWalletId);
-    }
-    throw error;
-  }
-}
-
 export function isValidIconType(iconType: string): iconType is IconType {
   return (ICON_TYPES as readonly string[]).includes(iconType);
-}
-
-export async function resetDemoData(): Promise<SessionsOverviewDto> {
-  await Promise.all([
-    WalletModel.deleteOne({ walletId: DEMO_WALLET_ID }),
-    SessionModel.deleteMany({ ownerWalletId: DEMO_WALLET_ID }),
-    ChargeAttemptModel.deleteMany({ ownerWalletId: DEMO_WALLET_ID })
-  ]);
-  await seedDemoData();
-  const overview = await getSessionsOverview(DEMO_WALLET_ID);
-  liveEvents.publish('overview:' + DEMO_WALLET_ID, overview);
-  return overview;
 }

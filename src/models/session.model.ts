@@ -19,7 +19,7 @@ const transactionLogSchema = new Schema(
 
 const sessionSchema = new Schema(
   {
-    ownerWalletId: { type: String, required: true, index: true, default: 'demo-wallet' },
+    ownerWalletId: { type: String, required: true, index: true },
     publicId: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true, trim: true },
     serviceAddress: { type: String, required: true, trim: true },

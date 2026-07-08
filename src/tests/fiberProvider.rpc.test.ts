@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+
+process.env.FIBER_RPC_URL = process.env.FIBER_RPC_URL || 'http://127.0.0.1:8227';
+process.env.FIBER_PROVIDER = 'rpc';
+
+const { RpcFiberProvider } = await import('../services/fiberProvider.js');
+
+const provider = new RpcFiberProvider({ rpcUrl: process.env.FIBER_RPC_URL, network: 'testnet' });
+assert.equal(provider.kind, 'rpc');
+assert.equal(provider.network, 'testnet');
+await assert.rejects(
+  () => provider.createSession({
+    localSessionId: 'session-1',
+    walletId: 'wallet-1',
+    appAddress: '0xapp',
+    amountMinor: 1_000_000,
+    currency: 'USDC'
+  }),
+  /FIBER_PEER_ID/
+);

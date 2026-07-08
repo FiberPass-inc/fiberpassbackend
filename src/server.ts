@@ -11,9 +11,7 @@ import { requestContext } from './middleware/requestContext.middleware.js';
 import { securityHeaders } from './middleware/securityHeaders.middleware.js';
 import { appsRouter } from './routes/apps.routes.js';
 import { authRouter } from './routes/auth.routes.js';
-import { demoRouter } from './routes/demo.routes.js';
 import { sessionsRouter } from './routes/sessions.routes.js';
-import { chargeRandomActiveSession, seedDemoData } from './services/session.service.js';
 
 function parseCorsOrigin(origin: string): boolean | string[] {
   if (origin === '*') return true;
@@ -31,8 +29,7 @@ app.use(express.json({ limit: env.REQUEST_BODY_LIMIT }));
 function sendMeta(_request: Request, response: Response): void {
   response.json({
     service: 'fiberpass-api',
-    mode: env.DEMO_MODE ? 'demo' : 'product',
-    demoMode: env.DEMO_MODE,
+    mode: 'product',
     fiber: {
       provider: env.FIBER_PROVIDER,
       network: env.FIBER_NETWORK,
@@ -59,11 +56,6 @@ app.use(sessionsRouter);
 app.use('/v1', authRouter);
 app.use('/v1', appsRouter);
 app.use('/v1', sessionsRouter);
-if (env.DEMO_MODE) {
-  app.use(demoRouter);
-  app.use('/v1', demoRouter);
-}
-
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (error instanceof ZodError) {
     response.status(400).json({
@@ -97,24 +89,13 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
 });
 
 await mongoose.connect(env.MONGODB_URI);
-if (env.DEMO_MODE) {
-  await seedDemoData();
-}
-
-let demoTimer: NodeJS.Timeout | undefined;
-if (env.DEMO_MODE && env.DEMO_AUTO_CHARGE) {
-  demoTimer = setInterval(() => {
-    chargeRandomActiveSession().catch((error) => logger.warn('demo_auto_charge_tick_skipped', { error }));
-  }, env.DEMO_CHARGE_INTERVAL_MS);
-}
 
 const server = http.createServer(app);
 server.listen(env.PORT, '0.0.0.0', () => {
-  logger.info('api_listening', { port: env.PORT, demoMode: env.DEMO_MODE, fiberProvider: env.FIBER_PROVIDER, fiberNetwork: env.FIBER_NETWORK });
+  logger.info('api_listening', { port: env.PORT, fiberProvider: env.FIBER_PROVIDER, fiberNetwork: env.FIBER_NETWORK });
 });
 
 const shutdown = async () => {
-  if (demoTimer) clearInterval(demoTimer);
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
