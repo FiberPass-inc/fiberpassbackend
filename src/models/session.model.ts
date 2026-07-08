@@ -11,7 +11,8 @@ const transactionLogSchema = new Schema(
     id: { type: String, required: true },
     type: { type: String, required: true },
     timestamp: { type: String, required: true },
-    amount: { type: Number, required: true, min: 0 }
+    amount: { type: Number, required: true, min: 0 },
+    amountMinor: { type: Number, min: 0 }
   },
   { _id: false }
 );
@@ -29,14 +30,24 @@ const sessionSchema = new Schema(
     chargePolicy: { type: String, trim: true },
     expiryAt: { type: Date },
     platformFeeEstimate: { type: Number, min: 0, default: 0 },
+    platformFeeEstimateMinor: { type: Number, min: 0, default: 0 },
     networkFeeEstimate: { type: Number, min: 0, default: 0 },
+    networkFeeEstimateMinor: { type: Number, min: 0, default: 0 },
     spent: { type: Number, required: true, min: 0, default: 0 },
+    spentMinor: { type: Number, min: 0, default: 0 },
     limit: { type: Number, required: true, min: 0.01 },
+    limitMinor: { type: Number, min: 1 },
     currency: { type: String, required: true, default: 'USDC' },
     duration: { type: String, required: true },
     status: { type: String, enum: SESSION_STATUSES, required: true, default: 'active', index: true },
     iconType: { type: String, enum: ICON_TYPES, required: true, default: 'rpc' },
     expiryTime: { type: String, required: true },
+    fiberProvider: { type: String, trim: true },
+    fiberNetwork: { type: String, trim: true },
+    fiberSessionId: { type: String, trim: true, index: true },
+    fiberStatus: { type: String, trim: true, default: 'pending' },
+    fiberProofId: { type: String, trim: true },
+    lastChargeProofId: { type: String, trim: true },
     autoMicroCharges: { type: Boolean, required: true, default: true },
     singleUse: { type: Boolean, required: true, default: false },
     logs: { type: [transactionLogSchema], default: [] }

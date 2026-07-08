@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/errors.js';
 import { AppApiKeyModel, AppModel, type AppApiKeyRecord, type AppRecord } from '../models/app.model.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
+import { fallbackMinorUnits, fromMinorUnits } from '../lib/money.js';
+import { writeAuditLog } from './audit.service.js';
 
 export interface CreateDeveloperAppInput {
   name: string;
@@ -43,13 +45,19 @@ export interface AppChargeAttemptDto {
   appId?: string;
   apiKeyId?: string;
   amount: number;
+  amountMinor: number;
   currency: string;
   type: string;
   status: string;
   failureCode?: string;
   failureMessage?: string;
   resultingSpent?: number;
+  resultingSpentMinor?: number;
   remainingBalance?: number;
+  remainingBalanceMinor?: number;
+  provider?: string;
+  network?: string;
+  proofId?: string;
   createdAt: string;
 }
 
@@ -108,19 +116,33 @@ function toApiKeyDto(key: AppApiKeyRecord & { createdAt?: Date; lastUsedAt?: Dat
 }
 
 export function toAppChargeAttemptDto(attempt: ChargeAttemptRecord & { createdAt?: Date }): AppChargeAttemptDto {
+  const amountMinor = fallbackMinorUnits(attempt.amountMinor, attempt.amount, attempt.currency);
+  const resultingSpentMinor = attempt.resultingSpentMinor == null
+    ? attempt.resultingSpent == null ? undefined : fallbackMinorUnits(undefined, attempt.resultingSpent, attempt.currency)
+    : attempt.resultingSpentMinor;
+  const remainingBalanceMinor = attempt.remainingBalanceMinor == null
+    ? attempt.remainingBalance == null ? undefined : fallbackMinorUnits(undefined, attempt.remainingBalance, attempt.currency)
+    : attempt.remainingBalanceMinor;
+
   return {
     id: attempt.attemptId,
     sessionId: attempt.sessionId,
     appId: attempt.appId ?? undefined,
     apiKeyId: attempt.apiKeyId ?? undefined,
-    amount: attempt.amount,
+    amount: fromMinorUnits(amountMinor, attempt.currency),
+    amountMinor,
     currency: attempt.currency,
     type: attempt.type,
     status: attempt.status,
     failureCode: attempt.failureCode ?? undefined,
     failureMessage: attempt.failureMessage ?? undefined,
-    resultingSpent: attempt.resultingSpent ?? undefined,
-    remainingBalance: attempt.remainingBalance ?? undefined,
+    resultingSpent: resultingSpentMinor == null ? undefined : fromMinorUnits(resultingSpentMinor, attempt.currency),
+    resultingSpentMinor,
+    remainingBalance: remainingBalanceMinor == null ? undefined : fromMinorUnits(remainingBalanceMinor, attempt.currency),
+    remainingBalanceMinor,
+    provider: attempt.provider ?? undefined,
+    network: attempt.network ?? undefined,
+    proofId: attempt.proofId ?? undefined,
     createdAt: (attempt.createdAt ?? new Date()).toISOString()
   };
 }
@@ -144,6 +166,8 @@ export async function createDeveloperApp(input: CreateDeveloperAppInput, walletI
     description: input.description ?? '',
     status: 'active'
   });
+
+  await writeAuditLog({ actorWalletId: walletId, action: 'app.created', targetType: 'app', targetId: app.appId, metadata: { name: input.name } });
 
   return {
     ...toAppDto(app.toObject()),
@@ -183,6 +207,8 @@ export async function createAppApiKey(appId: string, walletId: string, label = '
     status: 'active'
   });
 
+  await writeAuditLog({ actorWalletId: walletId, action: 'app_api_key.created', targetType: 'app', targetId: appId, metadata: { keyId, keyPrefix: secret.slice(0, 18) } });
+
   return {
     ...toApiKeyDto(key.toObject()),
     secret
@@ -199,6 +225,7 @@ export async function revokeAppApiKey(appId: string, keyId: string, walletId: st
   if (!key) {
     throw new ApiError(404, 'API_KEY_NOT_FOUND', 'API key was not found for this app.');
   }
+  await writeAuditLog({ actorWalletId: walletId, action: 'app_api_key.revoked', targetType: 'app', targetId: appId, metadata: { keyId } });
   return toApiKeyDto(key.toObject());
 }
 

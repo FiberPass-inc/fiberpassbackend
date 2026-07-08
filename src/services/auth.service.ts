@@ -3,6 +3,7 @@ import { getAddress, verifyMessage } from 'ethers';
 import { env } from '../config/env.js';
 import { ApiError } from '../lib/errors.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
+import { writeAuditLog } from './audit.service.js';
 import type { AuthContext } from '../types/auth.js';
 import { ensureWalletForAddress, seedWalletDemoSessions, walletIdFromAddress, type WalletDto } from './session.service.js';
 
@@ -125,6 +126,15 @@ export async function verifyAuthChallenge(input: AuthVerifyInput): Promise<AuthV
     expiresAt
   });
 
+  await writeAuditLog({
+    actorWalletId: wallet.walletId,
+    actorAddress: normalizedAddress,
+    action: 'auth.login',
+    targetType: 'wallet',
+    targetId: wallet.walletId,
+    metadata: { challengeId: input.challengeId }
+  });
+
   return {
     token,
     expiresAt: expiresAt.toISOString(),
@@ -132,6 +142,7 @@ export async function verifyAuthChallenge(input: AuthVerifyInput): Promise<AuthV
       connected: true,
       address: normalizedAddress,
       balance: wallet.balance,
+      balanceMinor: wallet.balanceMinor ?? Math.round(wallet.balance * 1_000_000),
       currency: wallet.currency
     }
   };
@@ -154,7 +165,16 @@ export async function getAuthContextFromToken(token: string): Promise<AuthContex
 }
 
 export async function revokeAuthToken(token: string): Promise<void> {
-  await AuthSessionModel.deleteOne({ tokenHash: tokenHash(token) });
+  const session = await AuthSessionModel.findOneAndDelete({ tokenHash: tokenHash(token) });
+  if (session) {
+    await writeAuditLog({
+      actorWalletId: session.walletId,
+      actorAddress: session.address,
+      action: 'auth.logout',
+      targetType: 'wallet',
+      targetId: session.walletId
+    });
+  }
 }
 
 export async function getWalletForAuthContext(auth: AuthContext): Promise<{ wallet: WalletDto }> {
@@ -164,6 +184,7 @@ export async function getWalletForAuthContext(auth: AuthContext): Promise<{ wall
       connected: true,
       address: wallet.address,
       balance: wallet.balance,
+      balanceMinor: wallet.balanceMinor ?? Math.round(wallet.balance * 1_000_000),
       currency: wallet.currency
     }
   };

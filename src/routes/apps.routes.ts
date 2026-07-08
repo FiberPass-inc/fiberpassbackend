@@ -1,6 +1,8 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { z } from 'zod';
+import { env } from '../config/env.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { createRateLimitMiddleware, hashRateLimitKey } from '../middleware/rateLimit.middleware.js';
 import { requireAppApiKey } from '../middleware/appAuth.middleware.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { createAppApiKey, createDeveloperApp, listAppChargeAttempts, listDeveloperApps, revokeAppApiKey } from '../services/app.service.js';
@@ -33,6 +35,12 @@ const chargeSchema = z.object({
 });
 
 export const appsRouter = Router();
+const appChargeRateLimit = createRateLimitMiddleware({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.RATE_LIMIT_APP_CHARGE_MAX,
+  keyPrefix: 'app-charge',
+  keyGenerator: (request: Request) => hashRateLimitKey(request.header('x-fiberpass-api-key') || request.header('authorization') || request.ip || 'unknown')
+});
 
 appsRouter.get('/apps', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
@@ -64,7 +72,7 @@ appsRouter.get('/apps/:appId/charges', requireAuth, asyncHandler(async (request,
   response.json(await listAppChargeAttempts(walletId, appId));
 }));
 
-appsRouter.post('/apps/:appId/charges', requireAppApiKey, asyncHandler(async (request, response) => {
+appsRouter.post('/apps/:appId/charges', appChargeRateLimit, requireAppApiKey, asyncHandler(async (request, response) => {
   const { appId, keyId, serviceAddress } = (request as AppAuthenticatedRequest).appAuth;
   const payload = chargeSchema.parse(request.body);
   const overview = await chargeSession({

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { env } from '../config/env.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { liveEvents } from '../lib/liveEvents.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
@@ -10,7 +9,6 @@ import {
   getCreateSessionPolicy,
   getSessionsOverview,
   isValidIconType,
-  resetDemoData,
   revokeSession,
   settleSession,
   togglePauseSession,
@@ -92,19 +90,6 @@ sessionsRouter.post('/sessions/:id/close', requireAuth, asyncHandler(async (requ
   response.json(await settleSession(id, walletId));
 }));
 
-sessionsRouter.post('/demo/reset', asyncHandler(async (_request, response) => {
-  if (!env.DEMO_MODE) {
-    response.status(404).json({
-      error: {
-        code: 'DEMO_MODE_DISABLED',
-        message: 'Demo reset is disabled outside explicit demo mode.'
-      }
-    });
-    return;
-  }
-
-  response.json(await resetDemoData());
-}));
 
 sessionsRouter.get('/events', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;

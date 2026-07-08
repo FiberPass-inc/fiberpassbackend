@@ -7,7 +7,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx src/tests/money.test.ts && tsx src/tests/fiberProvider.mock.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

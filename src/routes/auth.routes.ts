@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { env } from '../config/env.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { createRateLimitMiddleware } from '../middleware/rateLimit.middleware.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { createAuthChallenge, getWalletForAuthContext, revokeAuthToken, verifyAuthChallenge } from '../services/auth.service.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
@@ -16,13 +18,14 @@ const verifySchema = z.object({
 });
 
 export const authRouter = Router();
+const authRateLimit = createRateLimitMiddleware({ windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_AUTH_MAX, keyPrefix: 'auth' });
 
-authRouter.post('/auth/challenge', asyncHandler(async (request, response) => {
+authRouter.post('/auth/challenge', authRateLimit, asyncHandler(async (request, response) => {
   const { address } = challengeSchema.parse(request.body ?? {});
   response.json(await createAuthChallenge(address));
 }));
 
-authRouter.post('/auth/verify', asyncHandler(async (request, response) => {
+authRouter.post('/auth/verify', authRateLimit, asyncHandler(async (request, response) => {
   const payload = verifySchema.parse(request.body);
   response.json(await verifyAuthChallenge(payload));
 }));

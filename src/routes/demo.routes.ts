@@ -2,7 +2,7 @@ import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
-import { chargeRandomActiveSession, chargeSession } from '../services/session.service.js';
+import { chargeRandomActiveSession, chargeSession, resetDemoData } from '../services/session.service.js';
 
 const chargeSchema = z.object({
   sessionId: z.string().min(1),
@@ -48,4 +48,14 @@ demoRouter.post('/demo/charge/random', asyncHandler(async (_request, response) =
     return;
   }
   response.json(overview);
+}));
+
+
+demoRouter.post('/demo/reset', asyncHandler(async (_request, response) => {
+  if (!env.DEMO_MODE) {
+    sendDemoDisabled(response);
+    return;
+  }
+
+  response.json(await resetDemoData());
 }));
