@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { liveEvents } from '../lib/liveEvents.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import {
@@ -18,7 +19,7 @@ import type { AuthenticatedRequest } from '../types/auth.js';
 
 const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  serviceAddress: z.string().trim().min(3).max(120),
+  serviceAddress: z.string().trim().min(1).max(190).refine(isFiberCkbAddress, FIBER_CKB_ADDRESS_ERROR),
   appId: z.string().trim().min(1).max(80).optional(),
   appUrl: z.string().trim().url().max(200).optional(),
   appTrustLevel: z.string().trim().min(1).max(40).optional(),

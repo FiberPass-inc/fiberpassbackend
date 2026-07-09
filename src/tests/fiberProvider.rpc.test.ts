@@ -12,7 +12,7 @@ await assert.rejects(
   () => provider.createSession({
     localSessionId: 'session-1',
     walletId: 'wallet-1',
-    appAddress: '0xapp',
+    appAddress: 'ckt1qrfrwcdnvssswdwpn3s9v8fp87emat306ctjwsm3nmlkjg8qyza2cqgqqxlert9yy2g2hhklyq8m24sakhfaqlyf4qd4c3fl',
     amountMinor: 1_000_000,
     currency: 'USDC'
   }),

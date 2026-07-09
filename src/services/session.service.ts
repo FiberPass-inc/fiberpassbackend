@@ -38,50 +38,7 @@ export interface VerifiedAppDto {
   permissions: string[];
 }
 
-const VERIFIED_APP_CATALOG: VerifiedAppDto[] = [
-  {
-    id: 'fiber-ai-agent',
-    name: 'Fiber AI Agent',
-    serviceAddress: '0xA17a00000000000000000000000000000000F1b3',
-    url: 'https://ai.fiberpass.app',
-    category: 'AI/API',
-    trustLevel: 'verified',
-    description: 'AI/API app for per-request Fiber micropayments.',
-    defaultCharge: 0.02,
-    defaultChargeMinor: toMinorUnits('0.02'),
-    chargePolicy: '$0.02 per completed request',
-    iconType: 'ai',
-    permissions: ['Charge approved requests', 'Read pass status', 'Receive revoke events']
-  },
-  {
-    id: 'fiber-rpc-relay',
-    name: 'Fiber RPC Relay',
-    serviceAddress: '0xA17a00000000000000000000000000000000c0de',
-    url: 'https://relay.fiberpass.app',
-    category: 'RPC',
-    trustLevel: 'reviewed',
-    description: 'RPC relay app for small metered node calls.',
-    defaultCharge: 0.005,
-    defaultChargeMinor: toMinorUnits('0.005'),
-    chargePolicy: '$0.005 per RPC call',
-    iconType: 'rpc',
-    permissions: ['Charge API calls', 'Read remaining balance']
-  },
-  {
-    id: 'fiber-storage',
-    name: 'Fiber Storage',
-    serviceAddress: '0xA17a00000000000000000000000000000000dB01',
-    url: 'https://storage.fiberpass.app',
-    category: 'Storage',
-    trustLevel: 'reviewed',
-    description: 'Metered storage app for bandwidth and object reads.',
-    defaultCharge: 0.01,
-    defaultChargeMinor: toMinorUnits('0.01'),
-    chargePolicy: '$0.01 per storage operation',
-    iconType: 'database',
-    permissions: ['Charge storage operations', 'Read pass status']
-  }
-];
+const VERIFIED_APP_CATALOG: VerifiedAppDto[] = [];
 
 interface TransactionLogDto {
   id: string;
@@ -269,7 +226,7 @@ export interface WalletIdentity {
 
 function newPublicId(): string {
   const raw = randomUUID().replace(/-/g, '');
-  return '0x' + raw.slice(0, 4) + '...' + raw.slice(-4);
+  return 'fp_pass_' + raw.slice(0, 16);
 }
 
 function utcTimeLabel(): string {

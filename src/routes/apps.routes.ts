@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
+import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { createRateLimitMiddleware, hashRateLimitKey } from '../middleware/rateLimit.middleware.js';
 import { requireAppApiKey } from '../middleware/appAuth.middleware.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
@@ -12,7 +13,7 @@ import type { AuthenticatedRequest } from '../types/auth.js';
 
 const appSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  serviceAddress: z.string().trim().min(3).max(120),
+  serviceAddress: z.string().trim().min(1).max(190).refine(isFiberCkbAddress, FIBER_CKB_ADDRESS_ERROR),
   url: z.string().trim().url().max(200).optional().or(z.literal('')),
   category: z.string().trim().min(1).max(60).default('API'),
   description: z.string().trim().max(240).default('')
