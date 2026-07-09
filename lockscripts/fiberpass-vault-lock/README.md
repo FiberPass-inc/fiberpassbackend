@@ -85,5 +85,15 @@ This is a draft script. A production build should pin the exact CKB toolchain, a
 Typical testnet build target:
 
 ```bash
-cargo build --release --target riscv64imac-unknown-none-elf
+npm run vault:build
 ```
+
+Deployment helper:
+
+```bash
+CKB_TESTNET_RPC_URL=https://... \
+CKB_TESTNET_INDEXER_URL=https://... \
+npm run vault:deploy:testnet
+```
+
+The deployment helper reads the local deployer wallet from `.local-secrets/fiberpass-lockscript-deployer.testnet.json` by default. The private key file must stay local and must never be committed. Set `BROADCAST=false` for a dry run.

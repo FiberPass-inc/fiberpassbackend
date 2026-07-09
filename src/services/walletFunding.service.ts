@@ -7,6 +7,7 @@ import { WalletFundingModel, type WalletFundingRecord } from '../models/walletFu
 import { WalletModel } from '../models/wallet.model.js';
 import { getSessionsOverview, type SessionsOverviewDto } from './session.service.js';
 import { writeAuditLog } from './audit.service.js';
+import { deriveVaultForWallet, getVaultRuntimeConfig, type DerivedVaultDto } from './vault.service.js';
 
 const FUNDING_CURRENCY = 'USDC';
 const MIN_FUNDING_MINOR = toMinorUnits('0.01', FUNDING_CURRENCY);
@@ -15,8 +16,15 @@ const MAX_FUNDING_MINOR = toMinorUnits('100000', FUNDING_CURRENCY);
 export interface WalletFundingConfigDto {
   currency: string;
   network: string;
+  depositMode: 'vault' | 'treasury';
   depositAddress: string;
   configured: boolean;
+  vault?: {
+    configured: boolean;
+    address?: string;
+    scriptHash?: string;
+    ownerLockHashSource?: string;
+  };
 }
 
 export interface WalletFundingRequestDto {
@@ -26,7 +34,13 @@ export interface WalletFundingRequestDto {
   amountMinor: number;
   currency: string;
   network: string;
+  depositMode?: string;
   depositAddress: string;
+  vaultScriptHash?: string;
+  vaultScriptArgs?: string;
+  vaultOwnerLockHash?: string;
+  vaultOwnerLockHashSource?: string;
+  vaultAccountIdHash?: string;
   memo: string;
   proofId?: string;
   status: WalletFundingRecord['status'];
@@ -47,21 +61,34 @@ function fundingMemo(walletId: string, fundingId: string): string {
   return ['fiberpass', fundingId, walletId.slice(0, 12)].join(':');
 }
 
-function getFundingConfig(): WalletFundingConfigDto {
+function getFundingConfig(walletId?: string): WalletFundingConfigDto {
+  const vault = walletId ? deriveVaultForWallet({ walletId }) : null;
+  const vaultRuntime = getVaultRuntimeConfig();
+  const depositAddress = vault?.address ?? env.FIBERPASS_TREASURY_ADDRESS;
+  const depositMode = vault ? 'vault' : 'treasury';
+
   return {
     currency: FUNDING_CURRENCY,
     network: env.FIBER_NETWORK,
-    depositAddress: env.FIBERPASS_TREASURY_ADDRESS,
-    configured: Boolean(env.FIBERPASS_TREASURY_ADDRESS)
+    depositMode,
+    depositAddress,
+    configured: Boolean(depositAddress),
+    vault: {
+      configured: vaultRuntime.configured,
+      address: vault?.address,
+      scriptHash: vault?.scriptHash,
+      ownerLockHashSource: vault?.ownerLockHashSource
+    }
   };
 }
 
-function requireFundingConfig(): WalletFundingConfigDto {
-  const config = getFundingConfig();
+function requireFundingConfig(walletId: string): WalletFundingConfigDto & { vaultDetails?: DerivedVaultDto } {
+  const vaultDetails = deriveVaultForWallet({ walletId }) ?? undefined;
+  const config = getFundingConfig(walletId);
   if (!config.configured) {
-    throw new ApiError(503, 'FUNDING_ADDRESS_NOT_CONFIGURED', 'Wallet funding is unavailable until FIBERPASS_TREASURY_ADDRESS is configured on the backend.');
+    throw new ApiError(503, 'FUNDING_ADDRESS_NOT_CONFIGURED', 'Wallet funding is unavailable until FiberPass vault deployment env or FIBERPASS_TREASURY_ADDRESS is configured on the backend.');
   }
-  return config;
+  return { ...config, vaultDetails };
 }
 
 function toFundingDto(record: WalletFundingRecord & { createdAt?: Date; confirmedAt?: Date | null }): WalletFundingRequestDto {
@@ -72,7 +99,13 @@ function toFundingDto(record: WalletFundingRecord & { createdAt?: Date; confirme
     amountMinor: record.amountMinor,
     currency: record.currency,
     network: record.network,
+    depositMode: record.depositMode ?? 'treasury',
     depositAddress: record.depositAddress,
+    vaultScriptHash: record.vaultScriptHash ?? undefined,
+    vaultScriptArgs: record.vaultScriptArgs ?? undefined,
+    vaultOwnerLockHash: record.vaultOwnerLockHash ?? undefined,
+    vaultOwnerLockHashSource: record.vaultOwnerLockHashSource ?? undefined,
+    vaultAccountIdHash: record.vaultAccountIdHash ?? undefined,
     memo: record.memo,
     proofId: record.proofId ?? undefined,
     status: record.status,
@@ -104,7 +137,7 @@ async function getWalletOrThrow(walletId: string) {
 export async function listWalletFunding(walletId: string): Promise<WalletFundingOverviewDto> {
   const requests = await WalletFundingModel.find({ walletId }).sort({ createdAt: -1 }).limit(20).lean<(WalletFundingRecord & { createdAt?: Date; confirmedAt?: Date })[]>();
   return {
-    config: getFundingConfig(),
+    config: getFundingConfig(walletId),
     requests: requests.map(toFundingDto)
   };
 }
@@ -112,7 +145,8 @@ export async function listWalletFunding(walletId: string): Promise<WalletFunding
 export async function createWalletFundingRequest(walletId: string, amount: number): Promise<WalletFundingRequestDto> {
   const wallet = await getWalletOrThrow(walletId);
   const amountMinor = validateFundingAmount(amount);
-  const config = requireFundingConfig();
+  const config = requireFundingConfig(walletId);
+  const vaultDetails = config.vaultDetails;
   const fundingId = newFundingId();
   const record = await WalletFundingModel.create({
     fundingId,
@@ -122,7 +156,13 @@ export async function createWalletFundingRequest(walletId: string, amount: numbe
     amountMinor,
     currency: FUNDING_CURRENCY,
     network: config.network,
+    depositMode: config.depositMode,
     depositAddress: config.depositAddress,
+    vaultScriptHash: vaultDetails?.scriptHash,
+    vaultScriptArgs: vaultDetails?.script.args,
+    vaultOwnerLockHash: vaultDetails?.ownerLockHash,
+    vaultOwnerLockHashSource: vaultDetails?.ownerLockHashSource,
+    vaultAccountIdHash: vaultDetails?.accountIdHash,
     memo: fundingMemo(walletId, fundingId),
     status: 'pending'
   });
@@ -133,7 +173,7 @@ export async function createWalletFundingRequest(walletId: string, amount: numbe
     action: 'wallet_funding.requested',
     targetType: 'wallet_funding',
     targetId: fundingId,
-    metadata: { amountMinor, currency: FUNDING_CURRENCY, network: config.network }
+    metadata: { amountMinor, currency: FUNDING_CURRENCY, network: config.network, depositMode: config.depositMode, vaultScriptHash: vaultDetails?.scriptHash }
   });
 
   return toFundingDto(record.toObject());

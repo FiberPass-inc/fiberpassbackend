@@ -25,13 +25,13 @@ API runs on `http://localhost:4000` by default. A real Fiber RPC URL is required
 
 ## Fiber Provider
 
-`FIBER_PROVIDER=rpc` is the only supported provider. Configure `FIBER_RPC_URL`, `FIBER_PEER_ID`, and optional `FIBER_API_KEY` for your Fiber node. Configure `FIBERPASS_TREASURY_ADDRESS` to enable wallet funding requests.
+`FIBER_PROVIDER=rpc` is the only supported provider. Configure `FIBER_RPC_URL`, `FIBER_PEER_ID`, and optional `FIBER_API_KEY` for your Fiber node. Configure `FIBERPASS_VAULT_CODE_HASH`, `FIBERPASS_VAULT_HASH_TYPE`, and `FIBERPASS_OPERATOR_LOCK_HASH` after deploying the vault lock script so funding requests derive per-user vault addresses. `FIBERPASS_TREASURY_ADDRESS` remains a temporary fallback while vault deployment is not configured.
 
 See `docs/fiber-network-spike.md` for integration notes.
 
 ## Lock Scripts
 
-Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lock` draft models testnet user vault cells with per-user lock args so funding records stay distinct across users.
+Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lock` draft models testnet user vault cells with per-user lock args so funding records stay distinct across users. Use `npm run vault:build` and `npm run vault:deploy:testnet` after funding the local deployer wallet.
 
 ## Core Endpoints
 
