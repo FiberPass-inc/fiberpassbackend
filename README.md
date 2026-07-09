@@ -31,7 +31,7 @@ See `docs/fiber-network-spike.md` for integration notes.
 
 ## Lock Scripts
 
-Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lock` draft models testnet user vault cells with per-user lock args so funding records stay distinct across users. Use `npm run vault:build` and `npm run vault:deploy:testnet` after funding the local deployer wallet.
+Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lock` draft models testnet user vault cells with per-user lock args so funding records stay distinct across users. Use `npm run vault:build` and `npm run vault:deploy:testnet` after funding the local deployer wallet. Testnet deployment details are recorded in `docs/vault-testnet-deployment.md`.
 
 ## Core Endpoints
 
