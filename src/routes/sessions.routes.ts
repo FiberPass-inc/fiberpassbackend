@@ -10,12 +10,19 @@ import {
   getCreateSessionPolicy,
   getSessionsOverview,
   isValidIconType,
+  isValidPaymentPurpose,
+  isValidReleaseCadence,
   revokeSession,
   settleSession,
   togglePauseSession,
   topUpSession
 } from '../services/session.service.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
+
+const recipientWalletSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  address: z.string().trim().min(1).max(190).refine(isFiberCkbAddress, FIBER_CKB_ADDRESS_ERROR)
+});
 
 const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -24,7 +31,16 @@ const createSessionSchema = z.object({
   appUrl: z.string().trim().url().max(200).optional(),
   appTrustLevel: z.string().trim().min(1).max(40).optional(),
   appPermissions: z.array(z.string().trim().min(1).max(80)).max(12).optional(),
-  chargePolicy: z.string().trim().min(1).max(160).optional(),
+  chargePolicy: z.string().trim().min(1).max(180).optional(),
+  paymentPurpose: z.string().trim().refine(isValidPaymentPurpose, 'Invalid payment purpose').optional(),
+  recipientName: z.string().trim().max(120).optional().or(z.literal('')),
+  recipientAddress: z.string().trim().max(190).optional().or(z.literal('')).refine((value) => !value || isFiberCkbAddress(value), FIBER_CKB_ADDRESS_ERROR),
+  recipientWallets: z.array(recipientWalletSchema).max(25).optional(),
+  paymentReference: z.string().trim().max(120).optional().or(z.literal('')),
+  releaseCadence: z.string().trim().refine(isValidReleaseCadence, 'Invalid release cadence').optional(),
+  nextReleaseAt: z.string().datetime().optional(),
+  maxChargeAmount: z.coerce.number().positive().max(CREATE_SESSION_POLICY.maxLimit).optional(),
+  conditionSummary: z.string().trim().max(240).optional().or(z.literal('')),
   expiryAt: z.string().datetime().optional(),
   platformFeeEstimate: z.coerce.number().min(0).max(100000).optional(),
   networkFeeEstimate: z.coerce.number().min(0).max(100000).optional(),

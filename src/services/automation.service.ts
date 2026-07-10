@@ -876,6 +876,15 @@ async function processPaymentJob(job: PaymentJobDocument, workerId: string): Pro
       throw new ApiError(404, 'APP_NOT_FOUND', 'Developer app was not found for this payment job.');
     }
 
+    const recipient = await RecipientModel.findOne({
+      recipientId: invoice.recipientId,
+      appId: job.appId,
+      ownerWalletId: job.ownerWalletId
+    }).lean<RecipientRecord>();
+    if (!recipient) {
+      throw new ApiError(404, 'RECIPIENT_NOT_FOUND', 'Payment job recipient was not found.');
+    }
+
     const fiberInvoice = ensureInvoicePaymentRequest(invoice.toObject());
     const invoiceMetadata = toMetadata(invoice.metadata) ?? {};
     const jobMetadata = toMetadata(job.metadata) ?? {};
@@ -900,6 +909,8 @@ async function processPaymentJob(job: PaymentJobDocument, workerId: string): Pro
         automationInvoiceId: invoice.invoiceId,
         automationJobId: job.jobId,
         recipientId: invoice.recipientId,
+        recipientAddress: recipient.serviceAddress,
+        recipientName: recipient.name,
         batchId: invoice.batchId
       }
     });

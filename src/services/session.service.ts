@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/errors.js';
+import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { liveEvents } from '../lib/liveEvents.js';
 import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, roundMoney, toMinorUnits } from '../lib/money.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
-import { ICON_TYPES, SessionModel, type IconType, type SessionRecord, type SessionStatus } from '../models/session.model.js';
+import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionRecord, type SessionStatus } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
 import { writeAuditLog } from './audit.service.js';
@@ -49,6 +50,11 @@ interface TransactionLogDto {
   amountMinor: number;
 }
 
+export interface RecipientWalletDto {
+  name: string;
+  address: string;
+}
+
 export interface ChargeAttemptDto {
   id: string;
   sessionId: string;
@@ -83,6 +89,16 @@ interface SessionLike {
   appTrustLevel?: string;
   appPermissions?: string[];
   chargePolicy?: string;
+  paymentPurpose?: PaymentPurpose;
+  recipientName?: string;
+  recipientAddress?: string;
+  recipientWallets?: RecipientWalletDto[];
+  paymentReference?: string;
+  releaseCadence?: ReleaseCadence;
+  nextReleaseAt?: Date;
+  maxChargeAmount?: number;
+  maxChargeAmountMinor?: number;
+  conditionSummary?: string;
   expiryAt?: Date;
   platformFeeEstimate?: number;
   platformFeeEstimateMinor?: number;
@@ -119,6 +135,16 @@ export interface SessionDto {
   appTrustLevel?: string;
   appPermissions?: string[];
   chargePolicy?: string;
+  paymentPurpose?: PaymentPurpose;
+  recipientName?: string;
+  recipientAddress?: string;
+  recipientWallets?: RecipientWalletDto[];
+  paymentReference?: string;
+  releaseCadence?: ReleaseCadence;
+  nextReleaseAt?: string;
+  maxChargeAmount?: number;
+  maxChargeAmountMinor?: number;
+  conditionSummary?: string;
   expiryAt?: string;
   platformFeeEstimate?: number;
   platformFeeEstimateMinor?: number;
@@ -172,6 +198,15 @@ export interface CreateSessionInput {
   appTrustLevel?: string;
   appPermissions?: string[];
   chargePolicy?: string;
+  paymentPurpose?: PaymentPurpose;
+  recipientName?: string;
+  recipientAddress?: string;
+  recipientWallets?: RecipientWalletDto[];
+  paymentReference?: string;
+  releaseCadence?: ReleaseCadence;
+  nextReleaseAt?: string;
+  maxChargeAmount?: number;
+  conditionSummary?: string;
   expiryAt?: string;
   platformFeeEstimate?: number;
   networkFeeEstimate?: number;
@@ -312,6 +347,16 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
     appTrustLevel: session.appTrustLevel,
     appPermissions: session.appPermissions ?? [],
     chargePolicy: session.chargePolicy,
+    paymentPurpose: session.paymentPurpose ?? 'app_session',
+    recipientName: session.recipientName,
+    recipientAddress: session.recipientAddress,
+    recipientWallets: session.recipientWallets ?? [],
+    paymentReference: session.paymentReference,
+    releaseCadence: session.releaseCadence ?? 'none',
+    nextReleaseAt: session.nextReleaseAt instanceof Date ? session.nextReleaseAt.toISOString() : undefined,
+    maxChargeAmount: session.maxChargeAmount,
+    maxChargeAmountMinor: session.maxChargeAmountMinor,
+    conditionSummary: session.conditionSummary,
     expiryAt: session.expiryAt instanceof Date ? session.expiryAt.toISOString() : session.expiryAt,
     platformFeeEstimate: fromMinorUnits(platformFeeEstimateMinor, session.currency),
     platformFeeEstimateMinor,
@@ -431,6 +476,220 @@ function validateExpiryAt(expiryAt?: string): Date | undefined {
 
 function estimatePlatformFeeMinor(limitMinor: number): number {
   return Math.max(toMinorUnits(String(CREATE_SESSION_POLICY.minPlatformFee), CREATE_SESSION_POLICY.currency), Math.ceil(limitMinor * (CREATE_SESSION_POLICY.platformFeeBps / 10000)));
+}
+
+function cleanOptionalString(value?: string): string | undefined {
+  const cleaned = (value ?? '').trim();
+  return cleaned ? cleaned : undefined;
+}
+
+function normalizePaymentPurpose(value?: PaymentPurpose): PaymentPurpose {
+  return value && isValidPaymentPurpose(value) ? value : 'app_session';
+}
+
+function defaultReleaseCadence(purpose: PaymentPurpose): ReleaseCadence {
+  if (purpose === 'subscription') return 'monthly';
+  if (purpose === 'recurring_release') return 'monthly';
+  return 'none';
+}
+
+function normalizeReleaseCadence(value: ReleaseCadence | undefined, purpose: PaymentPurpose): ReleaseCadence {
+  if (!value || !isValidReleaseCadence(value)) return defaultReleaseCadence(purpose);
+  if (purpose === 'app_session' || purpose === 'scheduled_release') return 'none';
+  if (value === 'none') return defaultReleaseCadence(purpose);
+  return value;
+}
+
+function validateNextReleaseAt(value: string | undefined, purpose: PaymentPurpose, expiryAt?: Date): Date | undefined {
+  const requiresDate = purpose === 'scheduled_release' || purpose === 'recurring_release';
+  const cleaned = cleanOptionalString(value);
+  if (!cleaned) {
+    if (requiresDate) {
+      throw new ApiError(400, 'RELEASE_DATE_REQUIRED', 'Choose when the reserved funds should auto-release.');
+    }
+    return undefined;
+  }
+
+  const parsed = new Date(cleaned);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ApiError(400, 'INVALID_RELEASE_DATE', 'Release date must be a valid ISO date.');
+  }
+
+  if (parsed.getTime() <= Date.now()) {
+    throw new ApiError(400, 'RELEASE_DATE_IN_PAST', 'Release date must be in the future.');
+  }
+
+  if (expiryAt && parsed.getTime() > expiryAt.getTime()) {
+    throw new ApiError(400, 'RELEASE_AFTER_EXPIRY', 'Release date must be before the FiberPass expiry.');
+  }
+
+  return parsed;
+}
+
+function normalizeRecipientWallets(input: {
+  purpose: PaymentPurpose;
+  recipientName?: string;
+  recipientAddress?: string;
+  recipientWallets?: RecipientWalletDto[];
+}): RecipientWalletDto[] {
+  const requiresRecipient = input.purpose === 'scheduled_release' || input.purpose === 'recurring_release';
+  const candidates = (input.recipientWallets ?? [])
+    .map((wallet) => ({ name: cleanOptionalString(wallet.name) ?? '', address: cleanOptionalString(wallet.address) ?? '' }))
+    .filter((wallet) => wallet.name || wallet.address);
+
+  const legacyName = cleanOptionalString(input.recipientName);
+  const legacyAddress = cleanOptionalString(input.recipientAddress);
+  if (candidates.length === 0 && (legacyName || legacyAddress)) {
+    candidates.push({ name: legacyName ?? 'Recipient', address: legacyAddress ?? '' });
+  }
+
+  if (requiresRecipient && candidates.length === 0) {
+    throw new ApiError(400, 'RECIPIENT_WALLETS_REQUIRED', 'Add at least one recipient CKB wallet for this payment rule.');
+  }
+
+  if (candidates.length > 25) {
+    throw new ApiError(400, 'TOO_MANY_RECIPIENT_WALLETS', 'A FiberPass payment rule can include up to 25 recipient wallets.');
+  }
+
+  const seen = new Set<string>();
+  const wallets: RecipientWalletDto[] = [];
+  for (const wallet of candidates) {
+    if (!wallet.name) {
+      throw new ApiError(400, 'RECIPIENT_NAME_REQUIRED', 'Each recipient wallet needs a label.');
+    }
+    if (!isFiberCkbAddress(wallet.address)) {
+      throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
+    }
+    const normalizedAddress = wallet.address.toLowerCase();
+    if (seen.has(normalizedAddress)) {
+      throw new ApiError(400, 'DUPLICATE_RECIPIENT_WALLET', 'Recipient wallet addresses must be unique in a payment rule.');
+    }
+    seen.add(normalizedAddress);
+    wallets.push(wallet);
+  }
+
+  return wallets;
+}
+
+function resolveMaxChargeAmountMinor(input: CreateSessionInput, purpose: PaymentPurpose, limitMinor: number): number | undefined {
+  if (input.maxChargeAmount == null) {
+    return purpose === 'app_session' ? undefined : limitMinor;
+  }
+
+  const maxChargeAmountMinor = toMinorUnits(String(input.maxChargeAmount), input.currency);
+  if (maxChargeAmountMinor <= 0) {
+    throw new ApiError(400, 'INVALID_MAX_CHARGE_AMOUNT', 'Maximum auto payment amount must be greater than zero.');
+  }
+  if (maxChargeAmountMinor > limitMinor) {
+    throw new ApiError(400, 'MAX_CHARGE_EXCEEDS_LIMIT', 'Maximum auto payment amount cannot exceed the pass limit.');
+  }
+  return maxChargeAmountMinor;
+}
+
+function cadenceLabel(cadence: ReleaseCadence): string {
+  switch (cadence) {
+    case 'daily': return 'daily';
+    case 'weekly': return 'weekly';
+    case 'monthly': return 'monthly';
+    case 'custom': return 'on the custom schedule';
+    case 'on_demand': return 'when the service requests payment';
+    default: return 'once';
+  }
+}
+
+function buildSessionChargePolicy(input: {
+  purpose: PaymentPurpose;
+  fallbackPolicy?: string;
+  maxChargeAmountMinor?: number;
+  currency: string;
+  releaseCadence: ReleaseCadence;
+  recipientName?: string;
+  recipientCount?: number;
+  nextReleaseAt?: Date;
+}): string | undefined {
+  if (input.purpose === 'app_session') return cleanOptionalString(input.fallbackPolicy);
+  const maxAmount = input.maxChargeAmountMinor == null ? undefined : fromMinorUnits(input.maxChargeAmountMinor, input.currency).toLocaleString('en-US') + ' ' + input.currency;
+  if (input.purpose === 'subscription') {
+    return 'Subscription can auto-charge ' + (maxAmount ? 'up to ' + maxAmount + ' ' : '') + cadenceLabel(input.releaseCadence) + ' while the pass is active.';
+  }
+  if (input.purpose === 'scheduled_release') {
+    const recipient = input.recipientCount && input.recipientCount > 1 ? ' to ' + input.recipientCount + ' wallets' : input.recipientName ? ' to ' + input.recipientName : '';
+    return 'Reserved funds auto-release once' + recipient + ' on the scheduled date after invoice validation.';
+  }
+  const recipient = input.recipientCount && input.recipientCount > 1 ? ' to ' + input.recipientCount + ' wallets' : input.recipientName ? ' to ' + input.recipientName : '';
+  return 'Recurring reserved funds auto-release ' + cadenceLabel(input.releaseCadence) + recipient + ' after invoice validation.';
+}
+
+function metadataString(metadata: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = metadata?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function addressesMatch(left?: string, right?: string): boolean {
+  return Boolean(left && right && left.trim().toLowerCase() === right.trim().toLowerCase());
+}
+
+function ruleMaxChargeMinor(session: { maxChargeAmountMinor?: number | null; maxChargeAmount?: number | null; currency?: string | null }): number | undefined {
+  if (session.maxChargeAmountMinor != null) return session.maxChargeAmountMinor;
+  if (session.maxChargeAmount != null) return fallbackMinorUnits(undefined, session.maxChargeAmount, session.currency ?? CREATE_SESSION_POLICY.currency);
+  return undefined;
+}
+
+function assertChargeAllowedBySessionRules(session: SessionRecord, input: ChargeSessionInput, amountMinor: number): void {
+  const purpose = normalizePaymentPurpose(session.paymentPurpose as PaymentPurpose | undefined);
+  const maxChargeMinor = ruleMaxChargeMinor(session);
+  if (maxChargeMinor != null && amountMinor > maxChargeMinor) {
+    throw new ApiError(402, 'PAYMENT_RULE_AMOUNT_EXCEEDED', 'Charge exceeds this FiberPass payment rule maximum.');
+  }
+
+  const reference = cleanOptionalString(session.paymentReference as string | undefined);
+  if (reference) {
+    const requestReference = metadataString(input.metadata, 'paymentReference', 'subscriptionId', 'externalReference', 'invoiceReference');
+    if (requestReference && requestReference !== reference) {
+      throw new ApiError(403, 'PAYMENT_REFERENCE_MISMATCH', 'Charge reference does not match this FiberPass rule.');
+    }
+  }
+
+  const allowedRecipientAddresses = (session.recipientWallets ?? [])
+    .map((wallet) => cleanOptionalString(wallet.address))
+    .filter((address): address is string => Boolean(address));
+  const legacyRecipientAddress = cleanOptionalString(session.recipientAddress as string | undefined);
+  if (allowedRecipientAddresses.length === 0 && legacyRecipientAddress) {
+    allowedRecipientAddresses.push(legacyRecipientAddress);
+  }
+  if (allowedRecipientAddresses.length > 0) {
+    const requestRecipient = metadataString(input.metadata, 'recipientAddress', 'recipientServiceAddress', 'payeeAddress');
+    if (!requestRecipient || !allowedRecipientAddresses.some((address) => addressesMatch(address, requestRecipient))) {
+      throw new ApiError(403, 'RECIPIENT_MISMATCH', 'Charge recipient does not match any wallet authorized by this FiberPass rule.');
+    }
+  }
+
+  if (purpose === 'subscription' || purpose === 'scheduled_release' || purpose === 'recurring_release') {
+    const nextReleaseAt = session.nextReleaseAt instanceof Date ? session.nextReleaseAt : undefined;
+    if (nextReleaseAt && nextReleaseAt.getTime() > Date.now()) {
+      throw new ApiError(409, 'RELEASE_NOT_DUE', 'Reserved funds are not due for release yet.');
+    }
+  }
+}
+
+function advanceReleaseDate(current: Date | undefined, cadence?: ReleaseCadence): Date | undefined {
+  const next = current ? new Date(current) : new Date();
+  switch (cadence) {
+    case 'daily':
+      next.setUTCDate(next.getUTCDate() + 1);
+      return next;
+    case 'weekly':
+      next.setUTCDate(next.getUTCDate() + 7);
+      return next;
+    case 'monthly':
+      next.setUTCMonth(next.getUTCMonth() + 1);
+      return next;
+    default:
+      return undefined;
+  }
 }
 
 export function walletIdFromAddress(address: string): string {
@@ -626,12 +885,40 @@ export async function createSession(input: CreateSessionInput, walletId: string)
   await ensureWalletMoneyFields(walletId);
 
   const expiryAt = validateExpiryAt(input.expiryAt);
+  const paymentPurpose = normalizePaymentPurpose(input.paymentPurpose);
+  const recipientWallets = normalizeRecipientWallets({
+    purpose: paymentPurpose,
+    recipientName: input.recipientName,
+    recipientAddress: input.recipientAddress,
+    recipientWallets: input.recipientWallets
+  });
+  const primaryRecipient = recipientWallets[0];
+  const recipientName = primaryRecipient?.name ?? cleanOptionalString(input.recipientName);
+  const recipientAddress = primaryRecipient?.address ?? cleanOptionalString(input.recipientAddress);
+  const releaseCadence = normalizeReleaseCadence(input.releaseCadence, paymentPurpose);
+  const nextReleaseAt = validateNextReleaseAt(input.nextReleaseAt, paymentPurpose, expiryAt);
+  const maxChargeAmountMinor = resolveMaxChargeAmountMinor(input, paymentPurpose, limitMinor);
+  const maxChargeAmount = maxChargeAmountMinor == null ? undefined : fromMinorUnits(maxChargeAmountMinor, input.currency);
+  const paymentReference = cleanOptionalString(input.paymentReference);
+  const conditionSummary = cleanOptionalString(input.conditionSummary);
+  const effectiveAutoMicroCharges = paymentPurpose === 'app_session' ? input.autoMicroCharges : true;
+  const effectiveSingleUse = paymentPurpose === 'scheduled_release' && recipientWallets.length <= 1 ? true : paymentPurpose === 'app_session' ? input.singleUse : false;
   const publicId = newPublicId();
   const serviceAddress = verifiedApp?.serviceAddress ?? input.serviceAddress;
   const appPermissions = verifiedApp?.permissions ?? input.appPermissions ?? [];
   const platformFeeEstimateMinor = estimatePlatformFeeMinor(limitMinor);
   const networkFeeEstimateMinor = toMinorUnits(String(CREATE_SESSION_POLICY.estimatedNetworkFee), input.currency);
   const limit = fromMinorUnits(limitMinor, input.currency);
+  const chargePolicy = buildSessionChargePolicy({
+    purpose: paymentPurpose,
+    fallbackPolicy: verifiedApp?.chargePolicy ?? input.chargePolicy,
+    maxChargeAmountMinor,
+    currency: input.currency,
+    releaseCadence,
+    recipientName,
+    recipientCount: recipientWallets.length,
+    nextReleaseAt
+  });
 
   const wallet = await WalletModel.findOneAndUpdate(
     { walletId, balanceMinor: { $gte: limitMinor } },
@@ -653,7 +940,17 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       appUrl: verifiedApp?.url ?? input.appUrl,
       appTrustLevel: verifiedApp?.trustLevel ?? input.appTrustLevel,
       appPermissions,
-      chargePolicy: verifiedApp?.chargePolicy ?? input.chargePolicy,
+      chargePolicy,
+      paymentPurpose,
+      recipientName,
+      recipientAddress,
+      recipientWallets,
+      paymentReference,
+      releaseCadence,
+      nextReleaseAt,
+      maxChargeAmount,
+      maxChargeAmountMinor,
+      conditionSummary,
       expiryAt,
       platformFeeEstimate: fromMinorUnits(platformFeeEstimateMinor, input.currency),
       platformFeeEstimateMinor,
@@ -671,12 +968,12 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       fiberProvider: fiberProvider.kind,
       fiberNetwork: fiberProvider.network,
       fiberStatus: 'active',
-      autoMicroCharges: input.autoMicroCharges,
-      singleUse: input.singleUse,
-      logs: [newLog('Session Stream Limit Created')]
+      autoMicroCharges: effectiveAutoMicroCharges,
+      singleUse: effectiveSingleUse,
+      logs: [newLog(paymentPurpose === 'app_session' ? 'Session Stream Limit Created' : 'Payment Rule Reserve Created')]
     });
 
-    await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: verifiedApp?.id ?? input.appId } });
+    await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: verifiedApp?.id ?? input.appId, paymentPurpose, releaseCadence, nextReleaseAt } });
   } catch (error) {
     await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: limitMinor, balance: limit } });
     throw error;
@@ -909,6 +1206,8 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       throw new ApiError(402, 'SESSION_LIMIT_EXCEEDED', 'Charge exceeds the remaining FiberPass balance.');
     }
 
+    assertChargeAllowedBySessionRules(session.toObject() as SessionRecord, input, amountMinor);
+
     const fiberInvoice = typeof input.metadata?.fiberInvoice === 'string' ? input.metadata.fiberInvoice.trim() : '';
     if (!fiberInvoice) {
       throw new ApiError(400, 'FIBER_INVOICE_REQUIRED', 'A Fiber invoice/payment request is required before an app can charge this FiberPass.');
@@ -968,6 +1267,15 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       await WalletModel.updateOne({ walletId: ownerWalletId }, { $inc: { balanceMinor: refundMinor, balance: refundAmount } });
     } else {
       session.fiberStatus = 'active';
+      const recipientWalletCount = Array.isArray(session.recipientWallets) ? session.recipientWallets.length : 0;
+      const canAdvanceReleaseDate = session.paymentPurpose !== 'recurring_release' || recipientWalletCount <= 1;
+      const advancedReleaseAt = canAdvanceReleaseDate
+        ? advanceReleaseDate(
+            session.nextReleaseAt instanceof Date ? session.nextReleaseAt : undefined,
+            session.releaseCadence as ReleaseCadence | undefined
+          )
+        : undefined;
+      if (advancedReleaseAt) session.nextReleaseAt = advancedReleaseAt;
     }
 
     await session.save();
@@ -981,7 +1289,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     attempt.remainingBalanceMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
     attempt.remainingBalance = fromMinorUnits(attempt.remainingBalanceMinor, currency);
     await attempt.save();
-    await writeAuditLog({ actorWalletId: ownerWalletId, action: 'charge.succeeded', targetType: 'session', targetId: input.sessionId, metadata: { appId: input.appId, amountMinor, proofId: charge.proofId } });
+    await writeAuditLog({ actorWalletId: ownerWalletId, action: 'charge.succeeded', targetType: 'session', targetId: input.sessionId, metadata: { appId: input.appId, amountMinor, proofId: charge.proofId, paymentPurpose: session.paymentPurpose, recipientAddress: session.recipientAddress } });
 
     const overview = await getSessionsOverview(ownerWalletId);
     liveEvents.publish('overview:' + ownerWalletId, overview);
@@ -1001,4 +1309,12 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
 
 export function isValidIconType(iconType: string): iconType is IconType {
   return (ICON_TYPES as readonly string[]).includes(iconType);
+}
+
+export function isValidPaymentPurpose(value: string): value is PaymentPurpose {
+  return (PAYMENT_PURPOSES as readonly string[]).includes(value);
+}
+
+export function isValidReleaseCadence(value: string): value is ReleaseCadence {
+  return (RELEASE_CADENCES as readonly string[]).includes(value);
 }

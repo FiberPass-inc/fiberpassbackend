@@ -6,6 +6,12 @@ export type SessionStatus = (typeof SESSION_STATUSES)[number];
 export const ICON_TYPES = ['cloud', 'code', 'database', 'cpu', 'ai', 'video', 'rpc'] as const;
 export type IconType = (typeof ICON_TYPES)[number];
 
+export const PAYMENT_PURPOSES = ['app_session', 'subscription', 'scheduled_release', 'recurring_release'] as const;
+export type PaymentPurpose = (typeof PAYMENT_PURPOSES)[number];
+
+export const RELEASE_CADENCES = ['none', 'on_demand', 'daily', 'weekly', 'monthly', 'custom'] as const;
+export type ReleaseCadence = (typeof RELEASE_CADENCES)[number];
+
 const transactionLogSchema = new Schema(
   {
     id: { type: String, required: true },
@@ -13,6 +19,14 @@ const transactionLogSchema = new Schema(
     timestamp: { type: String, required: true },
     amount: { type: Number, required: true, min: 0 },
     amountMinor: { type: Number, min: 0 }
+  },
+  { _id: false }
+);
+
+const recipientWalletSchema = new Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    address: { type: String, required: true, trim: true }
   },
   { _id: false }
 );
@@ -28,6 +42,16 @@ const sessionSchema = new Schema(
     appTrustLevel: { type: String, trim: true },
     appPermissions: { type: [String], default: [] },
     chargePolicy: { type: String, trim: true },
+    paymentPurpose: { type: String, enum: PAYMENT_PURPOSES, required: true, default: 'app_session', index: true },
+    recipientName: { type: String, trim: true },
+    recipientAddress: { type: String, trim: true },
+    recipientWallets: { type: [recipientWalletSchema], default: [] },
+    paymentReference: { type: String, trim: true },
+    releaseCadence: { type: String, enum: RELEASE_CADENCES, required: true, default: 'none' },
+    nextReleaseAt: { type: Date, index: true },
+    maxChargeAmount: { type: Number, min: 0 },
+    maxChargeAmountMinor: { type: Number, min: 0 },
+    conditionSummary: { type: String, trim: true },
     expiryAt: { type: Date },
     platformFeeEstimate: { type: Number, min: 0, default: 0 },
     platformFeeEstimateMinor: { type: Number, min: 0, default: 0 },
