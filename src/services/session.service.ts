@@ -511,6 +511,67 @@ async function getWalletDocument(walletId: string) {
   return wallet;
 }
 
+
+function fiberProviderFailure(error: unknown, code: string, fallbackMessage: string): ApiError {
+  if (error instanceof ApiError) return error;
+  const message = error instanceof Error && error.message ? error.message : fallbackMessage;
+  return new ApiError(502, code, message);
+}
+
+function localFiberResult(): { provider: typeof fiberProvider.kind; network: string; proofId: string } {
+  return { provider: fiberProvider.kind, network: fiberProvider.network, proofId: '' };
+}
+
+async function topUpFiberSessionIfOpen(input: {
+  session: { fiberSessionId?: string | null; currency: string };
+  publicId: string;
+  walletId: string;
+  amountMinor: number;
+}): Promise<{ provider: typeof fiberProvider.kind; network: string; proofId: string }> {
+  if (!input.session.fiberSessionId) return localFiberResult();
+  try {
+    return await fiberProvider.topUpSession({
+      sessionId: input.publicId,
+      networkSessionId: input.session.fiberSessionId,
+      walletId: input.walletId,
+      amountMinor: input.amountMinor,
+      currency: input.session.currency
+    });
+  } catch (error) {
+    throw fiberProviderFailure(error, 'FIBER_TOP_UP_FAILED', 'Fiber top up failed.');
+  }
+}
+
+async function settleFiberSessionIfOpen(input: {
+  session: { fiberSessionId?: string | null };
+  publicId: string;
+  amountMinor: number;
+  currency: string;
+  reason: 'revoked' | 'settled' | 'expired';
+}): Promise<{ provider: typeof fiberProvider.kind; network: string; proofId: string }> {
+  if (!input.session.fiberSessionId) return localFiberResult();
+  try {
+    const result = input.reason === 'revoked'
+      ? await fiberProvider.revokeSession({
+          sessionId: input.publicId,
+          networkSessionId: input.session.fiberSessionId,
+          amountMinor: input.amountMinor,
+          currency: input.currency,
+          reason: input.reason
+        })
+      : await fiberProvider.settleSession({
+          sessionId: input.publicId,
+          networkSessionId: input.session.fiberSessionId,
+          amountMinor: input.amountMinor,
+          currency: input.currency,
+          reason: input.reason
+        });
+    return { provider: result.provider, network: result.network, proofId: result.proofId };
+  } catch (error) {
+    throw fiberProviderFailure(error, 'FIBER_SETTLEMENT_FAILED', 'Fiber settlement failed.');
+  }
+}
+
 async function getSessionOrThrow(publicId: string, walletId?: string) {
   const session = await SessionModel.findOne({
     publicId,
@@ -583,16 +644,6 @@ export async function createSession(input: CreateSessionInput, walletId: string)
   }
 
   try {
-    const fiberSession = await fiberProvider.createSession({
-      localSessionId: publicId,
-      walletId,
-      appAddress: serviceAddress,
-      amountMinor: limitMinor,
-      currency: input.currency,
-      expiresAt: expiryAt,
-      metadata: { appId: verifiedApp?.id ?? input.appId }
-    });
-
     await SessionModel.create({
       ownerWalletId: walletId,
       publicId,
@@ -617,11 +668,9 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       status: 'active',
       iconType: verifiedApp?.iconType ?? input.iconType,
       expiryTime: expiryAt ? expiryAt.toISOString() : input.expiryTime,
-      fiberProvider: fiberSession.provider,
-      fiberNetwork: fiberSession.network,
-      fiberSessionId: fiberSession.networkSessionId,
-      fiberStatus: fiberSession.status,
-      fiberProofId: fiberSession.proofId,
+      fiberProvider: fiberProvider.kind,
+      fiberNetwork: fiberProvider.network,
+      fiberStatus: 'active',
       autoMicroCharges: input.autoMicroCharges,
       singleUse: input.singleUse,
       logs: [newLog('Session Stream Limit Created')]
@@ -662,12 +711,11 @@ export async function topUpSession(publicId: string, walletId: string, amount = 
   }
 
   try {
-    const result = await fiberProvider.topUpSession({
-      sessionId: publicId,
-      networkSessionId: session.fiberSessionId ?? undefined,
+    const result = await topUpFiberSessionIfOpen({
+      session,
+      publicId,
       walletId,
-      amountMinor: topUpMinor,
-      currency: session.currency
+      amountMinor: topUpMinor
     });
 
     const nextLimitMinor = sessionLimitMinor(session.toObject()) + topUpMinor;
@@ -714,9 +762,9 @@ export async function revokeSession(publicId: string, walletId: string): Promise
 
   const refundMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
   const refundAmount = fromMinorUnits(refundMinor, session.currency);
-  const result = await fiberProvider.revokeSession({
-    sessionId: publicId,
-    networkSessionId: session.fiberSessionId ?? undefined,
+  const result = await settleFiberSessionIfOpen({
+    session,
+    publicId,
     amountMinor: refundMinor,
     currency: session.currency,
     reason: 'revoked'
@@ -747,9 +795,9 @@ export async function settleSession(publicId: string, walletId: string): Promise
 
   const refundMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
   const refundAmount = fromMinorUnits(refundMinor, session.currency);
-  const result = await fiberProvider.settleSession({
-    sessionId: publicId,
-    networkSessionId: session.fiberSessionId ?? undefined,
+  const result = await settleFiberSessionIfOpen({
+    session,
+    publicId,
     amountMinor: refundMinor,
     currency: session.currency,
     reason: 'settled'
@@ -842,9 +890,9 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
 
     const remainingMinor = clampMinorUnits(limitMinor - spentMinor);
     if (amountMinor > remainingMinor) {
-      const result = await fiberProvider.settleSession({
-        sessionId: input.sessionId,
-        networkSessionId: session.fiberSessionId ?? undefined,
+      const result = await settleFiberSessionIfOpen({
+        session,
+        publicId: input.sessionId,
         amountMinor: 0,
         currency,
         reason: 'expired'
@@ -861,15 +909,25 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       throw new ApiError(402, 'SESSION_LIMIT_EXCEEDED', 'Charge exceeds the remaining FiberPass balance.');
     }
 
-    const charge = await fiberProvider.authorizeCharge({
-      sessionId: input.sessionId,
-      networkSessionId: session.fiberSessionId ?? undefined,
-      appAddress: session.serviceAddress,
-      amountMinor,
-      currency,
-      paymentRequest: typeof input.metadata?.fiberInvoice === 'string' ? input.metadata.fiberInvoice : undefined,
-      metadata: input.metadata
-    });
+    const fiberInvoice = typeof input.metadata?.fiberInvoice === 'string' ? input.metadata.fiberInvoice.trim() : '';
+    if (!fiberInvoice) {
+      throw new ApiError(400, 'FIBER_INVOICE_REQUIRED', 'A Fiber invoice/payment request is required before an app can charge this FiberPass.');
+    }
+
+    let charge;
+    try {
+      charge = await fiberProvider.authorizeCharge({
+        sessionId: input.sessionId,
+        networkSessionId: session.fiberSessionId ?? undefined,
+        appAddress: session.serviceAddress,
+        amountMinor,
+        currency,
+        paymentRequest: fiberInvoice,
+        metadata: input.metadata
+      });
+    } catch (error) {
+      throw fiberProviderFailure(error, 'FIBER_PAYMENT_FAILED', 'Fiber payment failed.');
+    }
 
     const nextSpentMinor = spentMinor + amountMinor;
     session.spentMinor = nextSpentMinor;
@@ -880,9 +938,9 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     prependLogs(session, newLog(input.type, amountMinor, currency));
 
     if (nextSpentMinor >= limitMinor) {
-      const result = await fiberProvider.settleSession({
-        sessionId: input.sessionId,
-        networkSessionId: session.fiberSessionId ?? undefined,
+      const result = await settleFiberSessionIfOpen({
+        session,
+        publicId: input.sessionId,
         amountMinor: 0,
         currency,
         reason: 'expired'
@@ -895,9 +953,9 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     } else if (session.singleUse) {
       const refundMinor = clampMinorUnits(limitMinor - nextSpentMinor);
       const refundAmount = fromMinorUnits(refundMinor, currency);
-      const result = await fiberProvider.settleSession({
-        sessionId: input.sessionId,
-        networkSessionId: session.fiberSessionId ?? undefined,
+      const result = await settleFiberSessionIfOpen({
+        session,
+        publicId: input.sessionId,
         amountMinor: refundMinor,
         currency,
         reason: 'settled'
@@ -929,12 +987,15 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     liveEvents.publish('overview:' + ownerWalletId, overview);
     return overview;
   } catch (error) {
-    const failure = failureFromError(error);
+    const publicError = error instanceof ApiError
+      ? error
+      : fiberProviderFailure(error, 'FIBER_PAYMENT_FAILED', 'Fiber payment failed.');
+    const failure = failureFromError(publicError);
     attempt.status = 'failed';
     attempt.failureCode = failure.code;
     attempt.failureMessage = failure.message;
     await attempt.save().catch(() => undefined);
-    throw error;
+    throw publicError;
   }
 }
 

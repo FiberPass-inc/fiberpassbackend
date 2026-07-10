@@ -20,7 +20,7 @@ const joyIdSignatureSchema = z.object({
   alg: z.union([z.literal(-257), z.literal(-7)]),
   attestation: z.string().optional(),
   state: z.unknown().optional(),
-  requestNetwork: z.enum(['nervos', 'nostr', 'ethereum', 'btc-p2tr', 'btc-p2wpkh', 'btc-auto']).optional()
+  requestNetwork: z.literal('nervos').optional()
 }).passthrough();
 
 const verifySchema = z.object({
