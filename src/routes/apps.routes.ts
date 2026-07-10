@@ -8,7 +8,7 @@ import { requireAppApiKeyWithScopes } from '../middleware/appAuth.middleware.js'
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { APP_API_KEY_SCOPES } from '../models/app.model.js';
 import { createAppApiKey, createDeveloperApp, listAppChargeAttempts, listDeveloperApps, revokeAppApiKey } from '../services/app.service.js';
-import { createRecipient, disableRecipient, listRecipients, updateRecipient, type AutomationActor } from '../services/automation.service.js';
+import { createInvoice, createInvoiceBatch, createRecipient, disableRecipient, listInvoices, listRecipients, updateRecipient, type AutomationActor } from '../services/automation.service.js';
 import { chargeSession } from '../services/session.service.js';
 import type { AppAuthenticatedRequest } from '../types/appAuth.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
@@ -56,6 +56,34 @@ const recipientUpdateSchema = z.object({
   externalId: z.string().trim().max(120).optional().or(z.literal('')),
   invoiceEndpoint: z.string().trim().url().max(240).optional().or(z.literal('')),
   metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+
+const invoiceSchema = z.object({
+  sessionId: z.string().trim().min(1),
+  recipientId: z.string().trim().min(1),
+  amount: z.coerce.number().positive().max(100000),
+  type: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(240).optional().or(z.literal('')),
+  memo: z.string().trim().max(240).optional().or(z.literal('')),
+  externalReference: z.string().trim().max(120).optional().or(z.literal('')),
+  idempotencyKey: z.string().trim().max(160).optional().or(z.literal('')),
+  fiberInvoice: z.string().trim().max(2000).optional().or(z.literal('')),
+  dueAt: z.string().trim().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const invoiceBatchSchema = z.object({
+  sessionId: z.string().trim().min(1),
+  description: z.string().trim().max(240).optional().or(z.literal('')),
+  externalReference: z.string().trim().max(120).optional().or(z.literal('')),
+  idempotencyKey: z.string().trim().max(160).optional().or(z.literal('')),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  invoices: z.array(invoiceSchema.omit({ sessionId: true })).min(1).max(100)
+});
+
+const invoiceQuerySchema = z.object({
+  sessionId: z.string().trim().min(1).optional()
 });
 
 function walletAutomationActor(request: Request, appId: string): AutomationActor {
@@ -149,6 +177,40 @@ appsRouter.patch('/apps/:appId/automation/recipients/:recipientId', requireAppAp
 appsRouter.post('/apps/:appId/automation/recipients/:recipientId/disable', requireAppApiKeyWithScopes(['recipients:write']), asyncHandler(async (request, response) => {
   const { recipientId } = paramsSchema.parse(request.params);
   response.json(await disableRecipient(appKeyAutomationActor(request), recipientId ?? ''));
+}));
+
+
+appsRouter.get('/apps/:appId/invoices', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const query = invoiceQuerySchema.parse(request.query ?? {});
+  response.json(await listInvoices(walletAutomationActor(request, appId), query.sessionId));
+}));
+
+appsRouter.post('/apps/:appId/invoices', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const payload = invoiceSchema.parse(request.body ?? {});
+  response.status(201).json(await createInvoice(walletAutomationActor(request, appId), payload));
+}));
+
+appsRouter.post('/apps/:appId/invoice-batches', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const payload = invoiceBatchSchema.parse(request.body ?? {});
+  response.status(201).json(await createInvoiceBatch(walletAutomationActor(request, appId), payload));
+}));
+
+appsRouter.get('/apps/:appId/automation/invoices', requireAppApiKeyWithScopes(['invoices:create']), asyncHandler(async (request, response) => {
+  const query = invoiceQuerySchema.parse(request.query ?? {});
+  response.json(await listInvoices(appKeyAutomationActor(request), query.sessionId));
+}));
+
+appsRouter.post('/apps/:appId/automation/invoices', requireAppApiKeyWithScopes(['invoices:create']), asyncHandler(async (request, response) => {
+  const payload = invoiceSchema.parse(request.body ?? {});
+  response.status(201).json(await createInvoice(appKeyAutomationActor(request), payload));
+}));
+
+appsRouter.post('/apps/:appId/automation/invoice-batches', requireAppApiKeyWithScopes(['invoices:create']), asyncHandler(async (request, response) => {
+  const payload = invoiceBatchSchema.parse(request.body ?? {});
+  response.status(201).json(await createInvoiceBatch(appKeyAutomationActor(request), payload));
 }));
 
 appsRouter.get('/apps/:appId/charges', requireAuth, asyncHandler(async (request, response) => {

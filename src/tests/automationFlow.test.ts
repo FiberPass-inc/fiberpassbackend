@@ -14,6 +14,7 @@ import {
   PaymentJobModel,
   RecipientModel
 } from '../models/automation.model.js';
+import { hashFiberInvoice, normalizeFiberInvoice } from '../services/automation.service.js';
 
 assert.equal(canTransitionInvoice('draft', 'queued'), true);
 assert.equal(canTransitionInvoice('queued', 'paid'), false);
@@ -68,3 +69,9 @@ assert.ok(jobIndexes.some((fields) => Object.prototype.hasOwnProperty.call(field
 const batchIndexes = PaymentBatchModel.schema.indexes().map(([fields]) => fields);
 assert.ok(batchIndexes.some((fields) => Object.prototype.hasOwnProperty.call(fields, 'batchId')));
 assert.ok(batchIndexes.some((fields) => Object.prototype.hasOwnProperty.call(fields, 'sessionId') && Object.prototype.hasOwnProperty.call(fields, 'status')));
+
+assert.equal(normalizeFiberInvoice('  fiber-payment-request  '), 'fiber-payment-request');
+assert.equal(normalizeFiberInvoice('   '), undefined);
+assert.equal(hashFiberInvoice('  invoice-one  '), hashFiberInvoice('invoice-one'));
+assert.notEqual(hashFiberInvoice('invoice-one'), hashFiberInvoice('invoice-two'));
+
