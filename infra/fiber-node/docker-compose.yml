@@ -9,7 +9,8 @@ services:
     volumes:
       - ./data:/fiber
     ports:
-      - "8228:8228/tcp"
+      - "127.0.0.1:${FIBER_RPC_LOCAL_PORT:-8227}:8227/tcp"
+      - "${FIBER_P2P_PORT:-8228}:8228/tcp"
     networks:
       - fiberpass-fiber
     healthcheck:
@@ -46,4 +47,3 @@ networks:
 volumes:
   caddy-data:
   caddy-config:
-

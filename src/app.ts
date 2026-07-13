@@ -10,6 +10,7 @@ import { requestContext } from './middleware/requestContext.middleware.js';
 import { securityHeaders } from './middleware/securityHeaders.middleware.js';
 import { appsRouter } from './routes/apps.routes.js';
 import { authRouter } from './routes/auth.routes.js';
+import { fiberRouter } from './routes/fiber.routes.js';
 import { sessionsRouter } from './routes/sessions.routes.js';
 import { walletRouter } from './routes/wallet.routes.js';
 import { runPaymentWorkerOnce } from './services/automation.service.js';
@@ -77,6 +78,8 @@ function sendMeta(_request: Request, response: Response): void {
 
 app.get('/meta', sendMeta);
 app.get('/v1/meta', sendMeta);
+app.use(fiberRouter);
+app.use('/v1', fiberRouter);
 
 app.get('/health', (_request, response) => {
   response.json({

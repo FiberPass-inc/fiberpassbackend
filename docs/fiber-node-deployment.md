@@ -78,3 +78,41 @@ FIBER_PEER_ID=<peer id from fnn-cli info when needed for open_channel>
 Then redeploy the backend.
 
 The direct vault payout flow can continue using `CKB_TESTNET_RPC_URL=https://testnet.ckb.dev`. Fiber RPC is needed for channel-style Fiber operations such as opening channels, sending Fiber invoices, and checking Fiber node state.
+
+## Vercel Deployment Shape
+
+Vercel should host the FiberPass API only. It should not host the Fiber node itself.
+
+Reason: a Fiber node is a long-running P2P process with persistent state, TCP peer connectivity, local keys, and a private RPC listener. Vercel functions are request-scoped application functions, so they can call a Fiber RPC endpoint but should not be treated as the node runtime.
+
+Correct production shape:
+
+```txt
+FiberPass frontend on Vercel
+        |
+FiberPass backend on Vercel
+        |
+HTTPS + bearer token
+        |
+Fiber RPC gateway on VPS
+        |
+Fiber node Docker container on VPS
+        |
+CKB testnet RPC / Fiber peers
+```
+
+Vercel backend env should point to the VPS gateway:
+
+```bash
+FIBER_RPC_URL=https://fiber-rpc.example.com
+FIBER_API_KEY=YOUR_FIBER_RPC_PROXY_TOKEN
+FIBER_PEER_ID=<peer id used for open_channel>
+```
+
+After deployment, check:
+
+```bash
+curl https://fiberpassbackend.vercel.app/fiber/node/status
+```
+
+The existing direct CKB vault payout flow does not require the Fiber node. The node is required for live Fiber channel/app payment operations.

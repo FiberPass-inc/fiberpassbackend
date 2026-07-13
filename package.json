@@ -16,7 +16,12 @@
     "worker:webhooks": "tsx src/workers/webhookWorker.ts",
     "start:worker:webhooks": "node dist/workers/webhookWorker.js",
     "demo:automation": "node scripts/automation-e2e-demo.mjs",
-    "fiber:node:config": "node infra/fiber-node/render-config.mjs"
+    "fiber:node:config": "node infra/fiber-node/render-config.mjs",
+    "fiber:node:up:local": "node infra/fiber-node/render-config.mjs && docker compose --env-file infra/fiber-node/.env -f infra/fiber-node/docker-compose.yml up -d fiber-node",
+    "fiber:node:up:gateway": "node infra/fiber-node/render-config.mjs && docker compose --env-file infra/fiber-node/.env -f infra/fiber-node/docker-compose.yml up -d",
+    "fiber:node:down": "docker compose --env-file infra/fiber-node/.env -f infra/fiber-node/docker-compose.yml down",
+    "fiber:node:logs": "docker compose --env-file infra/fiber-node/.env -f infra/fiber-node/docker-compose.yml logs -f fiber-node",
+    "fiber:node:status": "node scripts/fiber-node-status.mjs"
   },
   "dependencies": {
     "@ckb-lumos/lumos": "^0.23.0",
