@@ -29,7 +29,7 @@ const recipientWalletSchema = z.object({
   email: z.string().trim().email().max(190).optional().or(z.literal('')),
   amount: z.coerce.number().positive().max(CREATE_SESSION_POLICY.maxLimit).optional(),
   fiberInvoice: z.string().trim().min(16, 'Enter a full Fiber invoice/payment request; short placeholders cannot be paid.').max(2000).optional()
-}).refine((value) => Boolean(value.address || value.email), 'Each recipient needs a CKB wallet address or email.');
+}).refine((value) => Boolean(value.address || value.email || value.fiberInvoice), 'Each recipient needs a Fiber invoice, CKB wallet address, or email.');
 
 const createSessionSchema = z.object({
   name: z.string().trim().min(1).max(80),

@@ -35,6 +35,7 @@ const RETRYABLE_VAULT_CONFIG_FAILURE_CODES = [
   'VAULT_LIVE_CAPACITY_INSUFFICIENT',
   'OPERATOR_FEE_CAPACITY_INSUFFICIENT'
 ] as const;
+const RETRYABLE_FIBER_FAILURE_CODES = ['FIBER_PAYMENT_FAILED'] as const;
 
 export const CREATE_SESSION_POLICY = {
   minLimit: 0.01,
@@ -829,13 +830,14 @@ function normalizeRecipientWallets(input: {
 
   const seenAddresses = new Set<string>();
   const seenEmails = new Set<string>();
+  const seenFiberInvoices = new Set<string>();
   const wallets: RecipientWalletDto[] = [];
   for (const wallet of candidates) {
     if (!wallet.name) {
       throw new ApiError(400, 'RECIPIENT_NAME_REQUIRED', 'Each recipient needs a label.');
     }
-    if (!wallet.address && !wallet.email) {
-      throw new ApiError(400, 'RECIPIENT_DESTINATION_REQUIRED', 'Each recipient needs either a CKB wallet address or an email invite.');
+    if (!wallet.address && !wallet.email && !wallet.fiberInvoice) {
+      throw new ApiError(400, 'RECIPIENT_DESTINATION_REQUIRED', 'Each recipient needs a Fiber invoice, CKB wallet address, or email invite.');
     }
     if (wallet.address && !isFiberCkbAddress(wallet.address)) {
       throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
@@ -857,7 +859,13 @@ function normalizeRecipientWallets(input: {
       }
       seenEmails.add(wallet.email);
     }
-    const status = wallet.address ? 'pending' : 'awaiting_details';
+    if (wallet.fiberInvoice) {
+      if (seenFiberInvoices.has(wallet.fiberInvoice)) {
+        throw new ApiError(400, 'DUPLICATE_RECIPIENT_FIBER_INVOICE', 'Fiber payment requests must be unique in a payment rule.');
+      }
+      seenFiberInvoices.add(wallet.fiberInvoice);
+    }
+    const status = wallet.address || wallet.fiberInvoice ? 'pending' : 'awaiting_details';
     wallets.push({
       name: wallet.name,
       address: wallet.address,
@@ -866,7 +874,7 @@ function normalizeRecipientWallets(input: {
       amountMinor,
       fiberInvoice: wallet.fiberInvoice,
       status,
-      inviteStatus: wallet.email && !wallet.address ? 'pending' : 'not_required',
+      inviteStatus: wallet.email && !wallet.address && !wallet.fiberInvoice ? 'pending' : 'not_required',
       payoutNotificationStatus: wallet.email ? 'pending' : 'not_required'
     });
   }
@@ -1857,6 +1865,14 @@ function isRetryableVaultFailure(wallet: RecipientWalletDto): boolean {
   return isRetryableVaultConfigFailure(wallet.lastFailureCode) || isRetryableVaultTxFailure(wallet.lastFailureCode, wallet.lastFailureMessage);
 }
 
+function isRetryableFiberFailure(wallet: RecipientWalletDto): boolean {
+  return !!wallet.lastFailureCode && (RETRYABLE_FIBER_FAILURE_CODES as readonly string[]).includes(wallet.lastFailureCode);
+}
+
+function isRetryablePayoutFailure(wallet: RecipientWalletDto): boolean {
+  return isRetryableVaultFailure(wallet) || isRetryableFiberFailure(wallet);
+}
+
 function isRetryBackoffElapsed(wallet: RecipientWalletDto, nowMs = Date.now()): boolean {
   if (!wallet.lastAttemptAt) return true;
   const lastAttemptMs = new Date(wallet.lastAttemptAt).getTime();
@@ -1870,8 +1886,8 @@ function isStaleProcessingPayout(wallet: RecipientWalletDto, nowMs = Date.now())
 }
 
 function isPayoutRecipientProcessable(wallet: RecipientWalletDto): boolean {
-  if (!wallet.address) return false;
-  return !wallet.status || wallet.status === 'pending' || (wallet.status === 'failed' && isRetryableVaultFailure(wallet) && isRetryBackoffElapsed(wallet)) || isStaleProcessingPayout(wallet);
+  if (!wallet.address && !wallet.fiberInvoice) return false;
+  return !wallet.status || wallet.status === 'pending' || (wallet.status === 'failed' && isRetryablePayoutFailure(wallet) && isRetryBackoffElapsed(wallet)) || isStaleProcessingPayout(wallet);
 }
 
 async function claimRecipientWalletForPayout(input: { sessionId: string; index: number; staleBefore: Date; retryBefore: Date }): Promise<boolean> {
@@ -1931,30 +1947,36 @@ async function markRecipientWalletPaid(input: {
   index: number;
   chargeAttempt?: ChargeAttemptLike | null;
 }): Promise<void> {
+  const proofId = input.chargeAttempt?.proofId;
+  const isCkbTransaction = input.chargeAttempt?.proofType === 'ckb_transaction' || input.chargeAttempt?.executionLayer === 'ckb-vault';
+  const setFields: Record<string, unknown> = {
+    ['recipientWallets.' + input.index + '.status']: 'paid',
+    ['recipientWallets.' + input.index + '.paidAt']: new Date(),
+    ['recipientWallets.' + input.index + '.lastAttemptAt']: new Date(),
+    ['recipientWallets.' + input.index + '.chargeAttemptId']: input.chargeAttempt?.attemptId,
+    ['recipientWallets.' + input.index + '.payoutProofId']: proofId
+  };
+  const unsetFields: Record<string, 1> = {
+    ['recipientWallets.' + input.index + '.lastFailureCode']: 1,
+    ['recipientWallets.' + input.index + '.lastFailureMessage']: 1
+  };
+  if (proofId && isCkbTransaction) {
+    setFields['recipientWallets.' + input.index + '.payoutExplorerUrl'] = ckbTransactionExplorerUrl(proofId, input.chargeAttempt?.network ?? env.FIBER_NETWORK);
+  } else {
+    unsetFields['recipientWallets.' + input.index + '.payoutExplorerUrl'] = 1;
+  }
+
   await SessionModel.updateOne(
     { publicId: input.sessionId },
-    {
-      $set: {
-        ['recipientWallets.' + input.index + '.status']: 'paid',
-        ['recipientWallets.' + input.index + '.paidAt']: new Date(),
-        ['recipientWallets.' + input.index + '.lastAttemptAt']: new Date(),
-        ['recipientWallets.' + input.index + '.chargeAttemptId']: input.chargeAttempt?.attemptId,
-        ['recipientWallets.' + input.index + '.payoutProofId']: input.chargeAttempt?.proofId,
-        ['recipientWallets.' + input.index + '.payoutExplorerUrl']: ckbTransactionExplorerUrl(input.chargeAttempt?.proofId ?? undefined, input.chargeAttempt?.network ?? env.FIBER_NETWORK)
-      },
-      $unset: {
-        ['recipientWallets.' + input.index + '.lastFailureCode']: 1,
-        ['recipientWallets.' + input.index + '.lastFailureMessage']: 1
-      }
-    }
+    { $set: setFields, $unset: unsetFields }
   );
 }
 
-async function latestScheduledPayoutAttempt(sessionId: string, recipientAddress: string): Promise<ChargeAttemptLike | null> {
+async function latestScheduledPayoutAttempt(sessionId: string, recipientIndex: number): Promise<ChargeAttemptLike | null> {
   return ChargeAttemptModel.findOne({
     sessionId,
     'metadata.scheduledPayout': true,
-    'metadata.recipientAddress': recipientAddress
+    'metadata.recipientIndex': recipientIndex
   }).sort({ createdAt: -1 }).lean<ChargeAttemptLike | null>();
 }
 
@@ -2052,13 +2074,11 @@ export async function runDueSessionPayouts(input: DueSessionPayoutWorkerInput = 
     { status: "pending" },
     { status: { $exists: false } }
   ];
-  if (vaultReadiness.ready) {
-    recipientStatusFilters.push(
-      { status: 'failed', lastFailureCode: { $in: RETRYABLE_VAULT_CONFIG_FAILURE_CODES }, $or: [{ lastAttemptAt: { $lte: retryBefore } }, { lastAttemptAt: { $exists: false } }] },
-      { status: 'failed', lastFailureCode: 'VAULT_PAYOUT_TX_FAILED', lastFailureMessage: { $regex: RETRYABLE_VAULT_TX_FAILURE_PATTERN }, $or: [{ lastAttemptAt: { $lte: retryBefore } }, { lastAttemptAt: { $exists: false } }] },
-      { status: "processing", lastAttemptAt: { $lte: staleBefore } }
-    );
-  }
+  recipientStatusFilters.push(
+    { status: 'failed', lastFailureCode: { $in: [...RETRYABLE_VAULT_CONFIG_FAILURE_CODES, ...RETRYABLE_FIBER_FAILURE_CODES] }, $or: [{ lastAttemptAt: { $lte: retryBefore } }, { lastAttemptAt: { $exists: false } }] },
+    { status: 'failed', lastFailureCode: 'VAULT_PAYOUT_TX_FAILED', lastFailureMessage: { $regex: RETRYABLE_VAULT_TX_FAILURE_PATTERN }, $or: [{ lastAttemptAt: { $lte: retryBefore } }, { lastAttemptAt: { $exists: false } }] },
+    { status: "processing", lastAttemptAt: { $lte: staleBefore } }
+  );
 
   const sessionQuery: Record<string, unknown> = {
     status: "active",
@@ -2082,13 +2102,6 @@ export async function runDueSessionPayouts(input: DueSessionPayoutWorkerInput = 
     skipped: 0
   };
 
-  if (!vaultReadiness.ready) {
-    result.skipped = dueSessions.reduce((count, session) => {
-      const wallets = ((session.toObject() as SessionRecord).recipientWallets ?? []) as RecipientWalletDto[];
-      return count + wallets.filter(isPayoutRecipientProcessable).length;
-    }, 0);
-    return result;
-  }
 
   for (const session of dueSessions) {
     const sessionObject = session.toObject() as SessionRecord;
@@ -2119,34 +2132,42 @@ export async function runDueSessionPayouts(input: DueSessionPayoutWorkerInput = 
       }
 
       const recipientAddress = wallet.address;
-      if (!recipientAddress) {
+      const fiberInvoice = wallet.fiberInvoice;
+      if (!recipientAddress && !fiberInvoice) {
         result.skipped += 1;
         continue;
       }
 
       try {
+        const useFiberRail = Boolean(fiberInvoice);
+        if (!useFiberRail && !vaultReadiness.ready) {
+          throw new ApiError(503, vaultReadiness.code ?? 'VAULT_PAYOUT_NOT_READY', vaultReadiness.message ?? 'Direct vault payout is not ready.');
+        }
         await chargeSession({
           sessionId: session.publicId,
           amount: fromMinorUnits(amountMinor, session.currency),
           type: "Scheduled payout: " + wallet.name,
           appId: session.appId ?? undefined,
           appServiceAddress: session.serviceAddress,
+          paymentRequest: fiberInvoice,
           metadata: {
             scheduledPayout: true,
-            directVaultPayout: true,
-            payoutRail: "ckb_vault",
+            directVaultPayout: !useFiberRail,
+            payoutRail: useFiberRail ? "fiber" : "ckb_vault",
+            recipientIndex: index,
             recipientName: wallet.name,
             recipientAddress,
+            fiberInvoice,
             paymentReference: session.paymentReference,
             paymentPurpose: session.paymentPurpose
           }
         });
-        const chargeAttempt = await latestScheduledPayoutAttempt(session.publicId, recipientAddress);
+        const chargeAttempt = await latestScheduledPayoutAttempt(session.publicId, index);
         await markRecipientWalletPaid({ sessionId: session.publicId, index, chargeAttempt });
         await sendPayoutReceiptIfNeeded({ session: sessionObject, wallet, index, attempt: chargeAttempt });
         result.succeeded += 1;
       } catch (error) {
-        const chargeAttempt = await latestScheduledPayoutAttempt(session.publicId, recipientAddress);
+        const chargeAttempt = await latestScheduledPayoutAttempt(session.publicId, index);
         await markRecipientWalletFailure({ sessionId: session.publicId, index, failure: failureFromError(error), chargeAttemptId: chargeAttempt?.attemptId });
         result.failed += 1;
       }
