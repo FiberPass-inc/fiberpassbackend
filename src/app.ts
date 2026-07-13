@@ -86,7 +86,13 @@ app.get('/v1/meta', sendMeta);
 app.use(fiberRouter);
 app.use('/v1', fiberRouter);
 
-app.get('/health', (_request, response) => {
+app.get('/health', async (_request, response) => {
+  try {
+    await connectDatabase();
+  } catch {
+    // Health should report DB state without hiding API reachability.
+  }
+
   response.json({
     ok: true,
     service: 'fiberpass-api',
