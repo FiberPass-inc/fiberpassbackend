@@ -128,7 +128,12 @@ export class RpcFiberProvider implements FiberProvider {
       throw new Error('A Fiber invoice/payment request is required for Fiber charges.');
     }
 
-    const raw = await this.rpc('send_payment', [{ invoice }]);
+    const raw = await this.rpc('send_payment', [{
+      invoice,
+      ...(input.metadata?.fiberAllowSelfPayment === true ? { allow_self_payment: true } : {}),
+      ...(typeof input.metadata?.fiberPaymentTimeoutSeconds === 'number' ? { timeout: input.metadata.fiberPaymentTimeoutSeconds } : {}),
+      ...(typeof input.metadata?.fiberMaxFeeAmountMinor === 'number' ? { max_fee_amount: String(input.metadata.fiberMaxFeeAmountMinor) } : {})
+    }]);
     return {
       provider: this.kind,
       network: this.network,

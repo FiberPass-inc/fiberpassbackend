@@ -16,7 +16,7 @@ export interface VaultPayoutInput {
 }
 
 export interface VaultPayoutResult {
-  provider: 'ckb-vault';
+  provider: 'ckb-vault' | 'ckb-exit';
   network: string;
   proofId: string;
 }
@@ -36,6 +36,7 @@ export interface VaultPayoutReadiness {
 }
 
 type RpcScript = { code_hash: string; hash_type: string; args: string };
+type SecpSigner = { privateKey: string; address: string; lockHash: string; lock: Script };
 type RpcOutput = { capacity: string; lock: RpcScript; type?: RpcScript | null };
 type RpcCell = {
   out_point: { tx_hash: string; index: string };
@@ -156,14 +157,17 @@ function vaultCellDep(): CellDep {
   };
 }
 
-function operatorSigner(): { privateKey: string; address: string; lockHash: string; lock: Script } {
-  const privateKey = env.FIBERPASS_OPERATOR_PRIVATE_KEY.trim();
+function secpSignerFromPrivateKey(input: {
+  privateKey: string;
+  expectedLockHash?: string;
+  missingCode: string;
+  missingMessage: string;
+  mismatchCode: string;
+  mismatchMessage: string;
+}): SecpSigner {
+  const privateKey = input.privateKey.trim();
   if (!privateKey) {
-    throw new ApiError(
-      503,
-      'VAULT_PAYOUT_SIGNER_NOT_CONFIGURED',
-      'Direct vault payouts are enabled in the product flow, but the backend operator signer is not configured yet.'
-    );
+    throw new ApiError(503, input.missingCode, input.missingMessage);
   }
 
   const secp = networkConfig().SCRIPTS.SECP256K1_BLAKE160;
@@ -171,22 +175,48 @@ function operatorSigner(): { privateKey: string; address: string; lockHash: stri
     throw new ApiError(500, 'SECP_SCRIPT_NOT_CONFIGURED', 'CKB secp256k1 script config is unavailable.');
   }
 
-  const operatorLock: Script = {
+  const lock: Script = {
     codeHash: secp.CODE_HASH,
     hashType: secp.HASH_TYPE as Script['hashType'],
     args: hd.key.privateKeyToBlake160(privateKey)
   };
-  const lockHash = utils.computeScriptHash(operatorLock);
-  if (env.FIBERPASS_OPERATOR_LOCK_HASH && lockHash.toLowerCase() !== env.FIBERPASS_OPERATOR_LOCK_HASH.toLowerCase()) {
-    throw new ApiError(503, 'VAULT_OPERATOR_SIGNER_MISMATCH', 'Configured operator private key does not match FIBERPASS_OPERATOR_LOCK_HASH.');
+  const lockHash = utils.computeScriptHash(lock);
+  const expectedLockHash = input.expectedLockHash?.trim();
+  if (expectedLockHash && lockHash.toLowerCase() !== expectedLockHash.toLowerCase()) {
+    throw new ApiError(503, input.mismatchCode, input.mismatchMessage);
   }
 
   return {
     privateKey,
-    address: helpers.encodeToAddress(operatorLock, { config: networkConfig() }),
+    address: helpers.encodeToAddress(lock, { config: networkConfig() }),
     lockHash,
-    lock: operatorLock
+    lock
   };
+}
+
+function operatorSigner(): SecpSigner {
+  return secpSignerFromPrivateKey({
+    privateKey: env.FIBERPASS_OPERATOR_PRIVATE_KEY,
+    expectedLockHash: env.FIBERPASS_OPERATOR_LOCK_HASH,
+    missingCode: 'VAULT_PAYOUT_SIGNER_NOT_CONFIGURED',
+    missingMessage: 'Direct vault payouts are enabled in the product flow, but the backend operator signer is not configured yet.',
+    mismatchCode: 'VAULT_OPERATOR_SIGNER_MISMATCH',
+    mismatchMessage: 'Configured operator private key does not match FIBERPASS_OPERATOR_LOCK_HASH.'
+  });
+}
+
+function exitSettlementSigner(): SecpSigner {
+  const explicitExitKey = env.FIBER_EXIT_SETTLEMENT_PRIVATE_KEY.trim();
+  const privateKey = explicitExitKey || env.FIBER_NODE_CKB_PRIVATE_KEY || env.FIBERPASS_OPERATOR_PRIVATE_KEY;
+  const expectedLockHash = env.FIBER_EXIT_SETTLEMENT_LOCK_HASH.trim() || (!explicitExitKey && !env.FIBER_NODE_CKB_PRIVATE_KEY.trim() ? env.FIBERPASS_OPERATOR_LOCK_HASH : '');
+  return secpSignerFromPrivateKey({
+    privateKey,
+    expectedLockHash,
+    missingCode: 'FIBER_EXIT_SETTLEMENT_SIGNER_NOT_CONFIGURED',
+    missingMessage: 'Fiber exit CKB settlement requires FIBER_EXIT_SETTLEMENT_PRIVATE_KEY, FIBER_NODE_CKB_PRIVATE_KEY, or the existing operator signer for beta settlement.',
+    mismatchCode: 'FIBER_EXIT_SETTLEMENT_SIGNER_MISMATCH',
+    mismatchMessage: 'Configured Fiber exit settlement private key does not match FIBER_EXIT_SETTLEMENT_LOCK_HASH.'
+  });
 }
 
 export function getVaultPayoutReadiness(): VaultPayoutReadiness {
@@ -429,6 +459,122 @@ async function executeVaultPlainTransfer(input: {
     const message = error instanceof Error && error.message ? error.message : input.failureLabel + ' transaction failed.';
     throw new ApiError(502, input.failureCode, message);
   }
+}
+
+
+async function executePlainSecpTransfer(input: {
+  signer: SecpSigner;
+  recipientAddress: string;
+  amountMinor: number;
+  currency: string;
+  minimumErrorCode: string;
+  minimumErrorLabel: string;
+  insufficientCode: string;
+  insufficientLabel: string;
+  failureCode: string;
+  failureLabel: string;
+  provider: VaultPayoutResult['provider'];
+}): Promise<VaultPayoutResult> {
+  const minRecipientMinor = minimalRecipientCapacityMinor(input.recipientAddress);
+  if (input.amountMinor < minRecipientMinor) {
+    throw new ApiError(
+      400,
+      input.minimumErrorCode,
+      input.minimumErrorLabel + ' must be at least ' + fromMinorUnits(minRecipientMinor, input.currency).toLocaleString('en-US') + ' ' + input.currency + '.'
+    );
+  }
+
+  const recipientLock = parseCkbAddress(input.recipientAddress);
+  const amountMinor = BigInt(input.amountMinor);
+  const feeMinor = DEFAULT_OPERATOR_FEE_SHANNONS;
+  const requiredMinor = amountMinor + feeMinor;
+  const minChangeMinor = minimalPlainCellCapacityMinor(input.signer.lock);
+  const cells = await listOperatorFeeCells(input.signer.lock, new Set());
+  let selected: Cell[] = [];
+  let change = 0n;
+  try {
+    const selection = selectVaultCells({ cells, amountMinor: requiredMinor, minChangeMinor });
+    selected = selection.selected;
+    change = selection.change;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'VAULT_LIVE_CAPACITY_INSUFFICIENT') {
+      throw new ApiError(402, input.insufficientCode, input.insufficientLabel);
+    }
+    throw error;
+  }
+  const indexer = new Indexer(ckbIndexerUrl(), ckbRpcUrl());
+  const rpc = new RPC(ckbRpcUrl());
+  let txSkeleton = helpers.TransactionSkeleton({ cellProvider: indexer });
+  txSkeleton = addCellDepOnce(txSkeleton, secpCellDep());
+
+  for (const cell of selected) {
+    txSkeleton = txSkeleton.update('inputs', (inputs) => inputs.push(cell));
+    txSkeleton = txSkeleton.update('witnesses', (witnesses) => witnesses.push('0x'));
+  }
+
+  txSkeleton = txSkeleton.update('outputs', (outputs) => outputs.push({
+    cellOutput: {
+      capacity: toHex(amountMinor),
+      lock: recipientLock,
+      type: undefined
+    },
+    data: '0x'
+  }));
+
+  if (change > 0n) {
+    txSkeleton = txSkeleton.update('outputs', (outputs) => outputs.push({
+      cellOutput: {
+        capacity: toHex(change),
+        lock: input.signer.lock,
+        type: undefined
+      },
+      data: '0x'
+    }));
+  }
+
+  try {
+    txSkeleton = setSecpSigningWitness(txSkeleton, input.signer.lockHash);
+    txSkeleton = commons.secp256k1Blake160.prepareSigningEntries(txSkeleton, { config: networkConfig() });
+    const signingEntries = txSkeleton.get('signingEntries').toArray() as Array<{ message: string }>;
+    const signatures = signingEntries.map((entry) => hd.key.signRecoverable(entry.message, input.signer.privateKey));
+    const tx = helpers.sealTransaction(txSkeleton, signatures);
+    const txHash = await rpc.sendTransaction(tx, 'passthrough');
+    return { provider: input.provider, network: env.FIBER_NETWORK, proofId: txHash };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    const message = error instanceof Error && error.message ? error.message : input.failureLabel + ' transaction failed.';
+    if (/capacity|insufficient/i.test(message)) {
+      throw new ApiError(402, input.insufficientCode, input.insufficientLabel);
+    }
+    throw new ApiError(502, input.failureCode, message);
+  }
+}
+
+export function getFiberExitSettlementReadiness(): VaultPayoutReadiness {
+  try {
+    exitSettlementSigner();
+    return { ready: true };
+  } catch (error) {
+    if (error instanceof ApiError) return { ready: false, code: error.code, message: error.message };
+    const message = error instanceof Error && error.message ? error.message : 'Fiber exit settlement configuration is not ready.';
+    return { ready: false, code: 'FIBER_EXIT_SETTLEMENT_NOT_READY', message };
+  }
+}
+
+export async function executeFiberExitSettlement(input: Omit<VaultPayoutInput, 'ownerWalletId' | 'sessionId'>): Promise<VaultPayoutResult> {
+  return executePlainSecpTransfer({
+    signer: exitSettlementSigner(),
+    recipientAddress: input.recipientAddress,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    minimumErrorCode: 'FIBER_EXIT_SETTLEMENT_BELOW_CELL_MINIMUM',
+    minimumErrorLabel: 'Fiber exit CKB settlements',
+    insufficientCode: 'FIBER_EXIT_SETTLEMENT_CAPACITY_INSUFFICIENT',
+    insufficientLabel: 'Fiber exit settlement wallet does not have enough plain CKB cells for this payout plus transaction fee.',
+    failureCode: 'FIBER_EXIT_SETTLEMENT_TX_FAILED',
+    failureLabel: 'Fiber exit CKB settlement',
+    provider: 'ckb-exit'
+  });
 }
 
 export async function executeVaultPayout(input: VaultPayoutInput): Promise<VaultPayoutResult> {
