@@ -663,6 +663,8 @@ export interface RecipientClaimDto {
   reference?: string;
   conditionSummary?: string;
   recipientTimeZone?: string;
+  hasAddress?: boolean;
+  hasFiberInvoice?: boolean;
 }
 
 function normalizeTimeZone(value?: string): string | undefined {
@@ -678,7 +680,7 @@ function normalizeTimeZone(value?: string): string | undefined {
 
 function recipientClaimDto(input: { session: SessionRecord; wallet: RecipientWalletDto; expired: boolean }): RecipientClaimDto {
   const { session, wallet, expired } = input;
-  const claimed = Boolean(wallet.address && wallet.inviteClaimedAt);
+  const claimed = Boolean((wallet.address || wallet.fiberInvoice) && wallet.inviteClaimedAt);
   const amountMinor = fallbackMinorUnits(wallet.amountMinor, wallet.amount, session.currency);
   return {
     tokenValid: !expired,
@@ -694,7 +696,9 @@ function recipientClaimDto(input: { session: SessionRecord; wallet: RecipientWal
     expiresAt: wallet.inviteTokenExpiresAt instanceof Date ? wallet.inviteTokenExpiresAt.toISOString() : undefined,
     reference: session.paymentReference ?? undefined,
     conditionSummary: session.conditionSummary ?? undefined,
-    recipientTimeZone: wallet.recipientTimeZone
+    recipientTimeZone: wallet.recipientTimeZone,
+    hasAddress: Boolean(wallet.address),
+    hasFiberInvoice: Boolean(wallet.fiberInvoice)
   };
 }
 
@@ -721,15 +725,21 @@ export async function getRecipientClaim(token: string): Promise<RecipientClaimDt
   return recipientClaimDto(claim);
 }
 
-export async function claimRecipientWallet(token: string, address: string, timeZone?: string): Promise<RecipientClaimDto> {
-  if (!isFiberCkbAddress(address)) {
+export async function claimRecipientWallet(token: string, input: { address?: string; fiberInvoice?: string }, timeZone?: string): Promise<RecipientClaimDto> {
+  const address = cleanOptionalString(input.address);
+  const fiberInvoice = validateFiberPaymentRequest(input.fiberInvoice);
+  if (!address && !fiberInvoice) {
+    throw new ApiError(400, 'RECIPIENT_DESTINATION_REQUIRED', 'Add a Fiber invoice/payment request or a CKB wallet address.');
+  }
+  if (address && !isFiberCkbAddress(address)) {
     throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
   }
   const claim = await findRecipientClaim(token);
   if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
   if (claim.expired) throw new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
 
-  claim.session.set('recipientWallets.' + claim.index + '.address', address.trim());
+  if (address) claim.session.set('recipientWallets.' + claim.index + '.address', address);
+  if (fiberInvoice) claim.session.set('recipientWallets.' + claim.index + '.fiberInvoice', fiberInvoice);
   claim.session.set('recipientWallets.' + claim.index + '.status', 'pending');
   claim.session.set('recipientWallets.' + claim.index + '.inviteStatus', 'claimed');
   const recipientTimeZone = normalizeTimeZone(timeZone);
@@ -1371,7 +1381,7 @@ export async function resendRecipientInvites(publicId: string, walletId: string)
   const wallets = (session.recipientWallets ?? []) as RecipientWalletDto[];
   const candidateIndexes = wallets
     .map((wallet, index) => ({ wallet, index }))
-    .filter(({ wallet }) => Boolean(wallet.email && !wallet.address && wallet.status !== 'paid' && wallet.inviteStatus !== 'claimed'));
+    .filter(({ wallet }) => Boolean(wallet.email && !wallet.address && !wallet.fiberInvoice && wallet.status !== 'paid' && wallet.inviteStatus !== 'claimed'));
 
   if (candidateIndexes.length === 0) {
     throw new ApiError(409, 'NO_RECIPIENT_INVITES_TO_RESEND', 'There are no pending recipient email invites to resend for this pass.');
@@ -2052,8 +2062,8 @@ async function finalizePayoutCycleIfComplete(sessionId: string, walletId: string
         amountMinor: wallet.amountMinor,
         fiberInvoice: wallet.fiberInvoice,
         email: wallet.email,
-        status: wallet.address ? 'pending' : 'awaiting_details',
-        inviteStatus: wallet.address ? 'claimed' : wallet.inviteStatus
+        status: wallet.address || wallet.fiberInvoice ? 'pending' : 'awaiting_details',
+        inviteStatus: wallet.address || wallet.fiberInvoice ? 'claimed' : wallet.inviteStatus
       })));
       prependLogs(session, newLog('Recurring Payout Cycle Completed'));
       await session.save();

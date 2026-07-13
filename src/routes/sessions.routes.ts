@@ -67,9 +67,10 @@ const topUpSchema = z.object({
 const paramsSchema = z.object({ id: z.string().min(1) });
 const claimParamsSchema = z.object({ token: z.string().trim().min(32).max(200) });
 const claimWalletSchema = z.object({
-  address: z.string().trim().min(1).max(190).refine(isFiberCkbAddress, FIBER_CKB_ADDRESS_ERROR),
+  address: z.string().trim().max(190).optional().or(z.literal('')).refine((value) => !value || isFiberCkbAddress(value), FIBER_CKB_ADDRESS_ERROR),
+  fiberInvoice: z.string().trim().min(16, 'Enter a full Fiber invoice/payment request; short placeholders cannot be paid.').max(2000).optional().or(z.literal('')),
   timeZone: z.string().trim().min(1).max(80).optional()
-});
+}).refine((value) => Boolean(value.address || value.fiberInvoice), 'Add a Fiber invoice/payment request or a CKB wallet address.');
 
 export const sessionsRouter = Router();
 
@@ -80,8 +81,8 @@ sessionsRouter.get('/recipient-claims/:token', asyncHandler(async (request, resp
 
 sessionsRouter.post('/recipient-claims/:token', asyncHandler(async (request, response) => {
   const { token } = claimParamsSchema.parse(request.params);
-  const { address, timeZone } = claimWalletSchema.parse(request.body ?? {});
-  response.json(await claimRecipientWallet(token, address, timeZone));
+  const { address, fiberInvoice, timeZone } = claimWalletSchema.parse(request.body ?? {});
+  response.json(await claimRecipientWallet(token, { address, fiberInvoice }, timeZone));
 }));
 
 sessionsRouter.get('/sessions/create-policy', requireAuth, asyncHandler(async (_request, response) => {
