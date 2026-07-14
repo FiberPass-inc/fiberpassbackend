@@ -37,7 +37,7 @@ type RecipientBridgeState = {
   fiberChannelOpenRequestedAt?: Date | string;
 };
 
-const CHANNEL_OPEN_WAIT_MS = 10 * 60 * 1000;
+const CHANNEL_OPEN_WAIT_MS = 2 * 60 * 1000;
 
 type FiberReadinessForLiquidity = Awaited<ReturnType<typeof getFiberNodeReadiness>>;
 
@@ -226,9 +226,14 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
   }
 
   try {
-    const missingLiquidityMinor = state.fiberChannelOpenProofId
-      ? Math.max(input.amountMinor - (afterBridgeLiquidity.totalOutboundCapacityMinor ?? 0), 1)
-      : input.amountMinor;
+    const stalePartialChannel = Boolean(
+      state.fiberChannelOpenProofId &&
+      !channelOpenStillFresh(state.fiberChannelOpenRequestedAt) &&
+      (state.fiberChannelOpenAmountMinor ?? 0) < input.amountMinor
+    );
+    const missingLiquidityMinor = !state.fiberChannelOpenProofId || stalePartialChannel
+      ? input.amountMinor
+      : Math.max(input.amountMinor - (afterBridgeLiquidity.totalOutboundCapacityMinor ?? 0), 1);
     const channel = await openFiberTestChannel({
       amount: fromMinorUnits(missingLiquidityMinor, input.currency),
       actorWalletId: input.ownerWalletId,
