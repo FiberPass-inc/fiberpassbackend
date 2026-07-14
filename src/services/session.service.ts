@@ -1955,6 +1955,7 @@ async function claimRecipientWalletForPayout(input: { sessionId: string; index: 
         { [statusPath]: "pending" },
         { [statusPath]: { $exists: false } },
         { [statusPath]: 'failed', [failureCodePath]: { $in: RETRYABLE_VAULT_CONFIG_FAILURE_CODES }, $or: [{ [lastAttemptPath]: { $lte: input.retryBefore } }, { [lastAttemptPath]: { $exists: false } }] },
+        { [statusPath]: 'failed', [failureCodePath]: { $in: RETRYABLE_FIBER_FAILURE_CODES }, $or: [{ [lastAttemptPath]: { $lte: input.retryBefore } }, { [lastAttemptPath]: { $exists: false } }] },
         { [statusPath]: 'failed', [failureCodePath]: 'VAULT_PAYOUT_TX_FAILED', [failureMessagePath]: { $regex: RETRYABLE_VAULT_TX_FAILURE_PATTERN }, $or: [{ [lastAttemptPath]: { $lte: input.retryBefore } }, { [lastAttemptPath]: { $exists: false } }] },
         { [statusPath]: "processing", [lastAttemptPath]: { $lte: input.staleBefore } }
       ]
