@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { normalizePaymentWorkerId, runPaymentWorkerOnce } from '../services/automation.service.js';
-import { runDueSessionPayouts } from '../services/session.service.js';
+import { runDueSessionPayouts, runPayoutReceiptNotifications } from '../services/session.service.js';
 
 const workerId = normalizePaymentWorkerId(process.env.PAYMENT_WORKER_ID);
 let stopping = false;
@@ -20,6 +20,11 @@ async function runLoop(): Promise<void> {
       const scheduledPayouts = await runDueSessionPayouts({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
       if (scheduledPayouts.processed > 0 || scheduledPayouts.failed > 0) {
         logger.info('scheduled_payouts_processed', { workerId, ...scheduledPayouts });
+      }
+
+      const receiptNotifications = await runPayoutReceiptNotifications({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
+      if (receiptNotifications.processed > 0 || receiptNotifications.failed > 0) {
+        logger.info('payout_receipts_processed', { workerId, ...receiptNotifications });
       }
 
       const result = await runPaymentWorkerOnce({ workerId, limit: env.PAYMENT_WORKER_BATCH_SIZE });

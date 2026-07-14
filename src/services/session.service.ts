@@ -1902,6 +1902,14 @@ export interface DueSessionPayoutWorkerResult {
   skipped: number;
 }
 
+export interface PayoutReceiptNotificationWorkerResult {
+  scanned: number;
+  processed: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+}
+
 function dueWalletAmountMinor(wallet: RecipientWalletDto, currency: string): number {
   return fallbackMinorUnits(wallet.amountMinor, wallet.amount, currency);
 }
@@ -2237,8 +2245,8 @@ async function sendPayoutReceiptIfNeeded(input: {
   wallet: RecipientWalletDto;
   index: number;
   attempt: ChargeAttemptLike | null;
-}): Promise<void> {
-  if (!input.wallet.email || !input.attempt?.proofId) return;
+}): Promise<boolean> {
+  if (!input.wallet.email || !input.attempt?.proofId) return false;
   try {
     await sendRecipientPayoutReceiptEmail({
       to: input.wallet.email,
@@ -2249,11 +2257,12 @@ async function sendPayoutReceiptIfNeeded(input: {
       currency: input.session.currency,
       txHash: input.attempt.proofId,
       explorerUrl: input.attempt.proofType === 'ckb_transaction' ? ckbTransactionExplorerUrl(input.attempt.proofId, input.attempt.network ?? env.FIBER_NETWORK) : undefined,
-      paidAt: new Date(),
+      paidAt: input.wallet.paidAt instanceof Date ? input.wallet.paidAt : new Date(),
       reference: input.session.paymentReference ?? undefined,
       timeZone: input.wallet.recipientTimeZone
     });
     await markRecipientPayoutNotification({ sessionId: input.session.publicId, index: input.index, status: 'sent' });
+    return true;
   } catch (error) {
     await markRecipientPayoutNotification({
       sessionId: input.session.publicId,
@@ -2261,7 +2270,64 @@ async function sendPayoutReceiptIfNeeded(input: {
       status: 'failed',
       failure: error instanceof Error ? error.message : 'Payout receipt email failed.'
     });
+    return false;
   }
+}
+
+export async function runPayoutReceiptNotifications(input: { limit?: number } = {}): Promise<PayoutReceiptNotificationWorkerResult> {
+  const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
+  const sessions = await SessionModel.find({
+    recipientWallets: {
+      $elemMatch: {
+        status: 'paid',
+        email: { $exists: true, $ne: '' },
+        payoutProofId: { $exists: true, $ne: '' },
+        payoutNotificationStatus: { $in: ['pending', 'failed'] }
+      }
+    }
+  }).sort({ updatedAt: 1 }).limit(limit).lean<SessionRecord[]>();
+
+  const result: PayoutReceiptNotificationWorkerResult = {
+    scanned: sessions.length,
+    processed: 0,
+    sent: 0,
+    failed: 0,
+    skipped: 0
+  };
+
+  for (const session of sessions) {
+    const wallets = (session.recipientWallets ?? []) as RecipientWalletDto[];
+    for (const [index, wallet] of wallets.entries()) {
+      if (wallet.status !== 'paid' || !wallet.email || !wallet.payoutProofId || !['pending', 'failed'].includes(wallet.payoutNotificationStatus ?? '')) {
+        result.skipped += 1;
+        continue;
+      }
+
+      result.processed += 1;
+      const sent = await sendPayoutReceiptIfNeeded({
+        session,
+        wallet,
+        index,
+        attempt: {
+          attemptId: wallet.chargeAttemptId ?? 'receipt-retry:' + session.publicId + ':' + index,
+          sessionId: session.publicId,
+          ownerWalletId: session.ownerWalletId as string,
+          amount: fromMinorUnits(dueWalletAmountMinor(wallet, session.currency), session.currency),
+          amountMinor: dueWalletAmountMinor(wallet, session.currency),
+          currency: session.currency,
+          type: 'Payout receipt retry: ' + wallet.name,
+          status: 'succeeded',
+          proofId: wallet.payoutProofId,
+          proofType: wallet.payoutExplorerUrl ? 'ckb_transaction' : 'fiber_payment',
+          network: env.FIBER_NETWORK
+        } as ChargeAttemptLike
+      });
+      if (sent) result.sent += 1;
+      else result.failed += 1;
+    }
+  }
+
+  return result;
 }
 
 async function finalizePayoutCycleIfComplete(sessionId: string, walletId: string): Promise<void> {
