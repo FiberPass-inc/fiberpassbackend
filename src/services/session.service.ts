@@ -63,7 +63,7 @@ export const CREATE_SESSION_POLICY = {
   minLimit: 0.01,
   maxLimit: 100000,
   currency: 'CKB',
-  minExpiryMinutes: 5,
+  minExpiryMinutes: 1,
   maxExpiryDays: 30,
   platformFeeBps: 50,
   minPlatformFee: 0.01,
@@ -783,6 +783,11 @@ export async function claimRecipientWallet(token: string, input: { address?: str
   if (recipientTimeZone) claim.session.set('recipientWallets.' + claim.index + '.recipientTimeZone', recipientTimeZone);
   claim.session.set('recipientWallets.' + claim.index + '.inviteClaimedAt', new Date());
   await claim.session.save();
+  void runScheduledLiquidityPreparation({
+    ownerWalletId: claim.session.ownerWalletId as string,
+    sessionId: claim.session.publicId,
+    limit: 1
+  }).catch(() => undefined);
   await publishOverview(claim.session.ownerWalletId as string).catch(() => undefined);
 
   const refreshed = await findRecipientClaim(token);
@@ -1399,6 +1404,7 @@ export async function createSession(input: CreateSessionInput, walletId: string)
 
     await sendSessionRecipientInvites(createdSession.toObject() as SessionRecord, preparedRecipients.invites);
     await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: verifiedApp?.id ?? input.appId, paymentPurpose, releaseCadence, nextReleaseAt, recipientInviteCount: preparedRecipients.invites.length } });
+    void runScheduledLiquidityPreparation({ ownerWalletId: walletId, sessionId: publicId, limit: 1 }).catch(() => undefined);
   } catch (error) {
     await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: limitMinor, balance: limit } });
     throw error;
@@ -2324,6 +2330,163 @@ export async function runPayoutReceiptNotifications(input: { limit?: number } = 
       });
       if (sent) result.sent += 1;
       else result.failed += 1;
+    }
+  }
+
+  return result;
+}
+
+interface ScheduledLiquidityPreparationWorkerInput {
+  limit?: number;
+  ownerWalletId?: string;
+  sessionId?: string;
+}
+
+export interface ScheduledLiquidityPreparationWorkerResult {
+  scanned: number;
+  processed: number;
+  ready: number;
+  pending: number;
+  failed: number;
+  skipped: number;
+}
+
+function hasPendingLiquidityFailure(wallet: RecipientWalletDto): boolean {
+  return PENDING_PAYOUT_FAILURE_CODES.includes(wallet.lastFailureCode as typeof PENDING_PAYOUT_FAILURE_CODES[number]);
+}
+
+function isLiquidityRecipientPreparable(wallet: RecipientWalletDto): boolean {
+  if (!wallet.address && !wallet.fiberInvoice) return false;
+  if (wallet.status === 'paid' || wallet.status === 'awaiting_details') return false;
+  if (wallet.status === 'processing') return isStaleProcessingPayout(wallet);
+  if (wallet.status === 'failed') return isRetryablePayoutFailure(wallet) && isRetryBackoffElapsed(wallet);
+  if (hasPendingLiquidityFailure(wallet) && !isRetryBackoffElapsed(wallet)) return false;
+  return !wallet.status || wallet.status === 'pending';
+}
+
+async function clearRecipientWalletFailure(sessionId: string, recipientIndex: number): Promise<void> {
+  await SessionModel.updateOne(
+    { publicId: sessionId },
+    {
+      $unset: {
+        ['recipientWallets.' + recipientIndex + '.lastFailureCode']: 1,
+        ['recipientWallets.' + recipientIndex + '.lastFailureMessage']: 1
+      }
+    }
+  );
+}
+
+async function markRecipientWalletLiquidityPreparationFailure(input: {
+  sessionId: string;
+  index: number;
+  failure: { code: string; message: string };
+}): Promise<void> {
+  const pendingRetry = (PENDING_PAYOUT_FAILURE_CODES as readonly string[]).includes(input.failure.code);
+  const setFields: Record<string, unknown> = {
+    ['recipientWallets.' + input.index + '.status']: pendingRetry ? 'pending' : 'failed',
+    ['recipientWallets.' + input.index + '.lastAttemptAt']: new Date(),
+    ['recipientWallets.' + input.index + '.lastFailureCode']: input.failure.code,
+    ['recipientWallets.' + input.index + '.lastFailureMessage']: input.failure.message
+  };
+
+  await SessionModel.updateOne(
+    { publicId: input.sessionId },
+    { $set: setFields }
+  );
+}
+
+export async function runScheduledLiquidityPreparation(input: ScheduledLiquidityPreparationWorkerInput = {}): Promise<ScheduledLiquidityPreparationWorkerResult> {
+  const limit = Math.min(Math.max(input.limit ?? 10, 1), 100);
+  const now = new Date();
+  const recipientDestinationFilters: Record<string, unknown>[] = [
+    { address: { $exists: true, $ne: '' } },
+    { fiberInvoice: { $exists: true, $ne: '' } }
+  ];
+  const sessionQuery: Record<string, unknown> = {
+    status: 'active',
+    paymentPurpose: { $in: ['subscription', 'scheduled_release', 'recurring_release'] },
+    nextReleaseAt: { $exists: true, $ne: null },
+    $or: [{ expiryAt: { $gt: now } }, { expiryAt: { $exists: false } }, { expiryAt: null }],
+    recipientWallets: {
+      $elemMatch: {
+        $or: recipientDestinationFilters
+      }
+    }
+  };
+  if (input.ownerWalletId) sessionQuery.ownerWalletId = input.ownerWalletId;
+  if (input.sessionId) sessionQuery.publicId = input.sessionId;
+
+  const sessions = await SessionModel.find(sessionQuery).sort({ nextReleaseAt: 1, createdAt: 1 }).limit(limit);
+  const result: ScheduledLiquidityPreparationWorkerResult = {
+    scanned: sessions.length,
+    processed: 0,
+    ready: 0,
+    pending: 0,
+    failed: 0,
+    skipped: 0
+  };
+
+  for (const session of sessions) {
+    const wallets = [...((session.recipientWallets ?? []) as RecipientWalletDto[])];
+    if (wallets.length === 0) {
+      result.skipped += 1;
+      continue;
+    }
+
+    let sessionTouched = false;
+    for (const [index, wallet] of wallets.entries()) {
+      if (earlierRecipientHasInFlightLiquidity(wallets, index)) {
+        result.skipped += 1;
+        continue;
+      }
+      if (!isLiquidityRecipientPreparable(wallet)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const amountMinor = dueWalletAmountMinor(wallet, session.currency);
+      if (amountMinor <= 0) {
+        await markRecipientWalletLiquidityPreparationFailure({
+          sessionId: session.publicId,
+          index,
+          failure: {
+            code: 'RECIPIENT_AMOUNT_REQUIRED',
+            message: 'Scheduled payout recipient is missing an amount.'
+          }
+        });
+        result.processed += 1;
+        result.failed += 1;
+        sessionTouched = true;
+        continue;
+      }
+
+      try {
+        await ensureVaultFundedFiberLiquidity({
+          ownerWalletId: session.ownerWalletId as string,
+          sessionId: session.publicId,
+          recipientIndex: index,
+          amountMinor,
+          currency: session.currency
+        });
+        await clearRecipientWalletFailure(session.publicId, index);
+        result.processed += 1;
+        result.ready += 1;
+        sessionTouched = true;
+      } catch (error) {
+        const failure = failureFromError(error);
+        await markRecipientWalletLiquidityPreparationFailure({ sessionId: session.publicId, index, failure });
+        result.processed += 1;
+        sessionTouched = true;
+        if (PENDING_PAYOUT_FAILURE_CODES.includes(failure.code as typeof PENDING_PAYOUT_FAILURE_CODES[number])) {
+          result.pending += 1;
+          break;
+        }
+        result.failed += 1;
+      }
+    }
+
+    if (sessionTouched) {
+      await publishOverview(session.ownerWalletId as string).catch(() => undefined);
     }
   }
 

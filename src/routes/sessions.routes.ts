@@ -16,6 +16,7 @@ import {
   isValidReleaseCadence,
   resendRecipientInvites,
   runDueSessionPayouts,
+  runScheduledLiquidityPreparation,
   revokeSession,
   settleSession,
   togglePauseSession,
@@ -91,15 +92,17 @@ sessionsRouter.get('/sessions/create-policy', requireAuth, asyncHandler(async (_
 
 sessionsRouter.get('/sessions', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
+  await runScheduledLiquidityPreparation({ ownerWalletId: walletId, limit: 5 }).catch(() => undefined);
   await runDueSessionPayouts({ ownerWalletId: walletId, limit: 5 }).catch(() => undefined);
   response.json(await getSessionsOverview(walletId));
 }));
 
 sessionsRouter.post('/sessions/payouts/sync', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
+  const liquidityPreparation = await runScheduledLiquidityPreparation({ ownerWalletId: walletId, limit: 25 });
   const payoutSync = await runDueSessionPayouts({ ownerWalletId: walletId, limit: 25 });
   const overview = await getSessionsOverview(walletId);
-  response.json({ ...overview, payoutSync });
+  response.json({ ...overview, liquidityPreparation, payoutSync });
 }));
 
 sessionsRouter.post('/sessions', requireAuth, asyncHandler(async (request, response) => {

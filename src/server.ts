@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { app, connectDatabase } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
-import { runDueSessionPayouts } from './services/session.service.js';
+import { runDueSessionPayouts, runScheduledLiquidityPreparation } from './services/session.service.js';
 
 let paymentSchedulerRunning = false;
 let paymentSchedulerTimer: NodeJS.Timeout | undefined;
@@ -12,6 +12,11 @@ async function runEmbeddedPaymentSchedulerTick(): Promise<void> {
   if (paymentSchedulerRunning) return;
   paymentSchedulerRunning = true;
   try {
+    const liquidityPreparation = await runScheduledLiquidityPreparation({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
+    if (liquidityPreparation.processed > 0 || liquidityPreparation.failed > 0) {
+      logger.info('api_scheduled_liquidity_prepared', { ...liquidityPreparation });
+    }
+
     const scheduledPayouts = await runDueSessionPayouts({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
     if (scheduledPayouts.processed > 0 || scheduledPayouts.failed > 0) {
       logger.info('api_scheduled_payouts_processed', { ...scheduledPayouts });

@@ -164,7 +164,8 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
     throw new ApiError(503, 'FIBER_NODE_UNREACHABLE', 'Fiber node is not reachable, so vault liquidity cannot be routed through Fiber yet.');
   }
 
-  if (sufficientOutboundLiquidity({ readiness, amountMinor: input.amountMinor })) {
+  const state = await recipientBridgeState(input.sessionId, input.recipientIndex);
+  if (state.fiberChannelOpenProofId && sufficientOutboundLiquidity({ readiness, amountMinor: input.amountMinor })) {
     return { ready: true, outboundCapacityMinor: getFiberPayoutLiquiditySnapshot(readiness).totalOutboundCapacityMinor };
   }
 
@@ -172,8 +173,6 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
   if (!nodeFundingAddress) {
     throw new ApiError(503, 'FIBER_NODE_FUNDING_ADDRESS_MISSING', 'Fiber node did not expose a funding address for vault-funded channel liquidity.');
   }
-
-  const state = await recipientBridgeState(input.sessionId, input.recipientIndex);
 
   if (!state.fiberLiquidityBridgeTxHash) {
     const bridge = await executeVaultLiquidityBridge({
@@ -208,7 +207,7 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
 
   const afterBridgeReadiness = await getFiberNodeReadiness();
   const afterBridgeLiquidity = getFiberPayoutLiquiditySnapshot(afterBridgeReadiness);
-  if (sufficientOutboundLiquidity({ readiness: afterBridgeReadiness, amountMinor: input.amountMinor })) {
+  if (state.fiberChannelOpenProofId && sufficientOutboundLiquidity({ readiness: afterBridgeReadiness, amountMinor: input.amountMinor })) {
     return { ready: true, outboundCapacityMinor: afterBridgeLiquidity.totalOutboundCapacityMinor };
   }
 
@@ -226,7 +225,9 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
   }
 
   try {
-    const missingLiquidityMinor = Math.max(input.amountMinor - (afterBridgeLiquidity.totalOutboundCapacityMinor ?? 0), 1);
+    const missingLiquidityMinor = state.fiberChannelOpenProofId
+      ? Math.max(input.amountMinor - (afterBridgeLiquidity.totalOutboundCapacityMinor ?? 0), 1)
+      : input.amountMinor;
     const channel = await openFiberTestChannel({
       amount: fromMinorUnits(missingLiquidityMinor, input.currency),
       actorWalletId: input.ownerWalletId,

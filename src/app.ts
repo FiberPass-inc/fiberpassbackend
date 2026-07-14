@@ -15,7 +15,7 @@ import { sessionsRouter } from './routes/sessions.routes.js';
 import { walletRouter } from './routes/wallet.routes.js';
 import { runPaymentWorkerOnce } from './services/automation.service.js';
 import { runReconciliationWorkerOnce } from './services/reconciliation.service.js';
-import { runDueSessionPayouts } from './services/session.service.js';
+import { runDueSessionPayouts, runScheduledLiquidityPreparation } from './services/session.service.js';
 import { runWebhookWorkerOnce } from './services/webhook.service.js';
 
 let mongoConnectionPromise: Promise<typeof mongoose> | undefined;
@@ -45,6 +45,7 @@ function verifyCronRequest(request: Request): boolean {
 }
 
 async function runPaymentCron() {
+  const liquidityPreparation = await runScheduledLiquidityPreparation({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
   const scheduledPayouts = await runDueSessionPayouts({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
   const automationPayments = await runPaymentWorkerOnce({
     workerId: 'vercel-cron-payment-worker',
@@ -58,7 +59,7 @@ async function runPaymentCron() {
     workerId: 'vercel-cron-reconciliation-worker',
     limit: env.PAYMENT_WORKER_BATCH_SIZE
   });
-  return { scheduledPayouts, automationPayments, webhookDeliveries, reconciliation };
+  return { liquidityPreparation, scheduledPayouts, automationPayments, webhookDeliveries, reconciliation };
 }
 
 export const app = express();
