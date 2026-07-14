@@ -124,6 +124,10 @@ export interface RecipientWalletDto {
   fiberLiquidityBridgeAmountMinor?: number;
   fiberLiquidityBridgeStatus?: string;
   fiberLiquidityBridgeCreatedAt?: string | Date;
+  fiberLiquidityBridgeTopUpTxHash?: string;
+  fiberLiquidityBridgeTopUpAmountMinor?: number;
+  fiberLiquidityBridgeTopUpStatus?: string;
+  fiberLiquidityBridgeTopUpCreatedAt?: string | Date;
   fiberChannelOpenProofId?: string;
   fiberChannelOpenAmountMinor?: number;
   fiberChannelOpenRequestedAt?: string | Date;
@@ -2518,6 +2522,10 @@ async function finalizePayoutCycleIfComplete(sessionId: string, walletId: string
         fiberLiquidityBridgeAmountMinor: undefined,
         fiberLiquidityBridgeStatus: undefined,
         fiberLiquidityBridgeCreatedAt: undefined,
+        fiberLiquidityBridgeTopUpTxHash: undefined,
+        fiberLiquidityBridgeTopUpAmountMinor: undefined,
+        fiberLiquidityBridgeTopUpStatus: undefined,
+        fiberLiquidityBridgeTopUpCreatedAt: undefined,
         fiberChannelOpenProofId: undefined,
         fiberChannelOpenAmountMinor: undefined,
         fiberChannelOpenRequestedAt: undefined,

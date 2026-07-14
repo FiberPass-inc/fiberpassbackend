@@ -1,9 +1,9 @@
 import { env } from '../config/env.js';
 import { ApiError } from '../lib/errors.js';
-import { fromMinorUnits } from '../lib/money.js';
+import { fromMinorUnits, toMinorUnits } from '../lib/money.js';
 import { SessionModel } from '../models/session.model.js';
 import { writeAuditLog } from './audit.service.js';
-import { getCkbTransaction } from './ckbChain.service.js';
+import { getCkbTransaction, listLiveVaultCells, parseCkbAddress } from './ckbChain.service.js';
 import { openFiberTestChannel } from './fiberChannel.service.js';
 import { getFiberNodeReadiness } from './fiberNode.service.js';
 import { executeVaultLiquidityBridge } from './vaultPayout.service.js';
@@ -35,9 +35,14 @@ type RecipientBridgeState = {
   fiberChannelOpenProofId?: string;
   fiberChannelOpenAmountMinor?: number;
   fiberChannelOpenRequestedAt?: Date | string;
+  fiberLiquidityBridgeTopUpTxHash?: string;
+  fiberLiquidityBridgeTopUpAmountMinor?: number;
+  fiberLiquidityBridgeTopUpStatus?: string;
+  fiberLiquidityBridgeTopUpCreatedAt?: Date | string;
 };
 
 const CHANNEL_OPEN_WAIT_MS = 2 * 60 * 1000;
+const NODE_FUNDING_CAPACITY_BUFFER_MINOR = toMinorUnits('0.01', 'CKB');
 
 type FiberReadinessForLiquidity = Awaited<ReturnType<typeof getFiberNodeReadiness>>;
 
@@ -130,6 +135,56 @@ function pendingChannelStateText(channel: Record<string, unknown>): string {
 function isFailedPendingChannel(channel: Record<string, unknown>): boolean {
   const text = pendingChannelStateText(channel).toLowerCase();
   return text.includes('funding_aborted') || text.includes('failed') || text.includes('closed') || text.includes('aborted');
+}
+
+async function nodeFundingCapacityMinor(address: string): Promise<number> {
+  const lock = parseCkbAddress(address);
+  const cells = await listLiveVaultCells({ lock, limit: 100 });
+  return cells.reduce((total, cell) => total + cell.capacityShannons, 0);
+}
+
+async function ensureNodeFundingCapacity(input: {
+  ownerWalletId: string;
+  sessionId: string;
+  recipientIndex: number;
+  nodeFundingAddress: string;
+  requiredMinor: number;
+  currency: string;
+  state: RecipientBridgeState;
+}): Promise<void> {
+  if (input.state.fiberLiquidityBridgeTopUpTxHash && input.state.fiberLiquidityBridgeTopUpStatus !== 'confirmed') {
+    await requireCommittedBridgeTransaction(input.state.fiberLiquidityBridgeTopUpTxHash);
+    await setRecipientBridgeFields(input.sessionId, input.recipientIndex, { fiberLiquidityBridgeTopUpStatus: 'confirmed' });
+  }
+
+  const requiredWithBufferMinor = input.requiredMinor + NODE_FUNDING_CAPACITY_BUFFER_MINOR;
+  const liveCapacityMinor = await nodeFundingCapacityMinor(input.nodeFundingAddress);
+  if (liveCapacityMinor >= requiredWithBufferMinor) return;
+
+  const topUpMinor = requiredWithBufferMinor - liveCapacityMinor;
+  const bridge = await executeVaultLiquidityBridge({
+    ownerWalletId: input.ownerWalletId,
+    sessionId: input.sessionId,
+    nodeFundingAddress: input.nodeFundingAddress,
+    amountMinor: topUpMinor,
+    currency: input.currency
+  });
+
+  await setRecipientBridgeFields(input.sessionId, input.recipientIndex, {
+    fiberLiquidityBridgeTopUpTxHash: bridge.proofId,
+    fiberLiquidityBridgeTopUpAmountMinor: topUpMinor,
+    fiberLiquidityBridgeTopUpStatus: 'pending_confirmation',
+    fiberLiquidityBridgeTopUpCreatedAt: new Date()
+  });
+  await writeAuditLog({
+    actorWalletId: input.ownerWalletId,
+    action: 'fiber.liquidity_bridge_top_up_submitted',
+    targetType: 'session',
+    targetId: input.sessionId,
+    metadata: { recipientIndex: input.recipientIndex, amountMinor: topUpMinor, requiredMinor: input.requiredMinor, liveCapacityMinor, txHash: bridge.proofId, nodeFundingAddress: input.nodeFundingAddress }
+  });
+
+  throw new ApiError(409, 'FIBER_LIQUIDITY_BRIDGE_PENDING', 'Reserved vault liquidity was topped up for Fiber channel funding. Waiting for CKB confirmation before opening the channel.');
 }
 
 async function inspectPendingChannelOpen(): Promise<PendingChannelOpenProbe> {
@@ -233,6 +288,16 @@ export async function ensureVaultFundedFiberLiquidity(input: FiberLiquidityBridg
     const missingLiquidityMinor = !state.fiberChannelOpenProofId || staleExistingChannel
       ? input.amountMinor
       : Math.max(input.amountMinor - (afterBridgeLiquidity.totalOutboundCapacityMinor ?? 0), 1);
+    await ensureNodeFundingCapacity({
+      ownerWalletId: input.ownerWalletId,
+      sessionId: input.sessionId,
+      recipientIndex: input.recipientIndex,
+      nodeFundingAddress,
+      requiredMinor: missingLiquidityMinor,
+      currency: input.currency,
+      state
+    });
+
     const channel = await openFiberTestChannel({
       amount: fromMinorUnits(missingLiquidityMinor, input.currency),
       actorWalletId: input.ownerWalletId,
