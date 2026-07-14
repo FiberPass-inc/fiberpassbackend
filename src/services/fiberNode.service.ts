@@ -220,11 +220,15 @@ function isPeerConnected(record: Record<string, unknown>): boolean | undefined {
 }
 
 function channelStatus(record: Record<string, unknown>): string | undefined {
-  return pickString(record, ['status', 'state', 'channel_status', 'channelStatus']);
+  const directStatus = pickString(record, ['status', 'channel_status', 'channelStatus']);
+  if (directStatus) return directStatus;
+  if (typeof record.state === 'string' && record.state.trim()) return record.state;
+  const nestedState = asRecord(record.state);
+  return pickString(nestedState, ['state_name', 'stateName', 'status']);
 }
 
 function isActiveChannel(status?: string): boolean {
-  if (!status) return true;
+  if (!status) return false;
   const normalized = status.trim().toLowerCase().replace(/[\s-]+/g, '_');
   return ACTIVE_CHANNEL_STATUSES.has(normalized) || normalized.includes('active') || normalized.includes('ready');
 }
