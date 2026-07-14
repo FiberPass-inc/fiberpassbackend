@@ -42,7 +42,7 @@ type RecipientBridgeState = {
 };
 
 const CHANNEL_OPEN_WAIT_MS = 2 * 60 * 1000;
-const NODE_FUNDING_CAPACITY_BUFFER_MINOR = toMinorUnits('0.01', 'CKB');
+const NODE_FUNDING_CAPACITY_BUFFER_MINOR = toMinorUnits('62', 'CKB');
 
 type FiberReadinessForLiquidity = Awaited<ReturnType<typeof getFiberNodeReadiness>>;
 
