@@ -322,6 +322,7 @@ export interface ChargeSessionInput {
   idempotencyKey?: string;
   serviceReference?: string;
   paymentRequest?: string;
+  deferSingleUseSettlement?: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -1834,7 +1835,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       session.fiberProofId = result.proofId;
       session.expiryTime = 'Limit Exhausted';
       prependLogs(session, newLog('Spending Limit Exhausted - Settled'));
-    } else if (session.singleUse) {
+    } else if (session.singleUse && !input.deferSingleUseSettlement) {
       const refundMinor = clampMinorUnits(limitMinor - nextSpentMinor);
       const refundAmount = fromMinorUnits(refundMinor, currency);
       const result = await settleFiberSessionIfOpen({
@@ -2166,6 +2167,7 @@ async function executeFiberExitPayout(input: {
         appId: undefined,
         appServiceAddress: input.session.serviceAddress,
         paymentRequest: invoice,
+        deferSingleUseSettlement: true,
         idempotencyKey: keysendTargetPubkey
           ? fiberExitChargeChunkIdempotencyKey(input.session.publicId, input.index, chunkIndex)
           : fiberExitChargeIdempotencyKey(input.session.publicId, input.index),
