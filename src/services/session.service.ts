@@ -53,6 +53,11 @@ const RETRYABLE_FIBER_FAILURE_CODES = [
   'FIBER_EXIT_SETTLEMENT_CAPACITY_INSUFFICIENT',
   'FIBER_EXIT_SETTLEMENT_TX_FAILED'
 ] as const;
+const PENDING_PAYOUT_FAILURE_CODES = [
+  'FIBER_LIQUIDITY_BRIDGE_PENDING',
+  'FIBER_CHANNEL_OPEN_PENDING',
+  'CHARGE_ATTEMPT_PENDING'
+] as const;
 
 export const CREATE_SESSION_POLICY = {
   minLimit: 0.01,
@@ -1974,8 +1979,9 @@ async function markRecipientWalletFailure(input: {
   failure: { code: string; message: string };
   chargeAttemptId?: string;
 }): Promise<void> {
+  const pendingRetry = (PENDING_PAYOUT_FAILURE_CODES as readonly string[]).includes(input.failure.code);
   const setFields: Record<string, unknown> = {
-    ['recipientWallets.' + input.index + '.status']: 'failed',
+    ['recipientWallets.' + input.index + '.status']: pendingRetry ? 'processing' : 'failed',
     ['recipientWallets.' + input.index + '.lastAttemptAt']: new Date(),
     ['recipientWallets.' + input.index + '.lastFailureCode']: input.failure.code,
     ['recipientWallets.' + input.index + '.lastFailureMessage']: input.failure.message
