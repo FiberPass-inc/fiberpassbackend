@@ -91,7 +91,7 @@ export interface VerifiedAppDto {
   serviceAddress: string;
   url: string;
   category: string;
-  trustLevel: 'verified' | 'reviewed' | 'manual';
+  trustLevel: 'owner-approved';
   description: string;
   defaultCharge: number;
   defaultChargeMinor: number;
@@ -99,8 +99,6 @@ export interface VerifiedAppDto {
   iconType: IconType;
   permissions: string[];
 }
-
-const VERIFIED_APP_CATALOG: VerifiedAppDto[] = [];
 
 interface TransactionLogDto {
   id: string;
@@ -556,7 +554,11 @@ async function publishOverview(walletId: string): Promise<void> {
   liveEvents.publish('overview:' + walletId, await getSessionsOverview(walletId));
 }
 
-export function getCreateSessionPolicy(): CreateSessionPolicyDto {
+export async function getCreateSessionPolicy(walletId: string): Promise<CreateSessionPolicyDto> {
+  const ownedApps = await AppModel.find({
+    ownerWalletId: walletId,
+    status: 'active'
+  }).sort({ createdAt: -1 }).lean<AppRecord[]>();
   return {
     limits: {
       min: CREATE_SESSION_POLICY.minLimit,
@@ -580,13 +582,21 @@ export function getCreateSessionPolicy(): CreateSessionPolicyDto {
       provider: fiberProvider.kind,
       network: fiberProvider.network
     },
-    verifiedApps: VERIFIED_APP_CATALOG
+    verifiedApps: ownedApps.map((app) => ({
+      id: app.appId,
+      name: app.name,
+      serviceAddress: app.serviceAddress,
+      url: app.url ?? '',
+      category: app.category ?? 'API',
+      trustLevel: 'owner-approved' as const,
+      description: app.description ?? '',
+      defaultCharge: CREATE_SESSION_POLICY.minLimit,
+      defaultChargeMinor: toMinorUnits(String(CREATE_SESSION_POLICY.minLimit), CREATE_SESSION_POLICY.currency),
+      chargePolicy: 'This owned app may create charges within the pass rule using an active app API key.',
+      iconType: 'code' as const,
+      permissions: ['charges:create']
+    }))
   };
-}
-
-function getVerifiedApp(appId?: string): VerifiedAppDto | undefined {
-  if (!appId || appId === 'manual') return undefined;
-  return VERIFIED_APP_CATALOG.find((app) => app.id === appId);
 }
 
 const SESSION_APP_PERMISSION_SET = new Set<string>(SESSION_APP_PERMISSIONS);
@@ -1478,11 +1488,10 @@ export async function createSession(input: CreateSessionInput, walletId: string)
   }
 
   const requestedAppId = cleanOptionalString(input.appId);
-  const verifiedApp = getVerifiedApp(requestedAppId);
   const registeredApp = requestedAppId && requestedAppId !== 'manual'
     ? await AppModel.findOne({ appId: requestedAppId, ownerWalletId: walletId, status: 'active' }).lean<AppRecord | null>()
     : null;
-  if (requestedAppId && requestedAppId !== 'manual' && !verifiedApp && !registeredApp) {
+  if (requestedAppId && requestedAppId !== 'manual' && !registeredApp) {
     throw new ApiError(403, 'APP_GRANT_NOT_ALLOWED', 'Only an active app owned by this wallet can be granted access to a FiberPass.');
   }
 
@@ -1521,18 +1530,17 @@ export async function createSession(input: CreateSessionInput, walletId: string)
   const effectiveAutoMicroCharges = paymentPurpose === 'app_session' ? input.autoMicroCharges : true;
   const effectiveSingleUse = paymentPurpose === 'scheduled_release' && recipientWallets.length <= 1 ? true : paymentPurpose === 'app_session' ? input.singleUse : false;
   const publicId = newPublicId();
-  const resolvedAppId = registeredApp?.appId ?? verifiedApp?.id ?? requestedAppId;
-  const serviceAddress = registeredApp?.serviceAddress ?? verifiedApp?.serviceAddress ?? input.serviceAddress;
-  const appPermissions = normalizeSessionAppPermissions(
-    registeredApp ? input.appPermissions : verifiedApp?.permissions ?? input.appPermissions,
-    Boolean(registeredApp)
-  );
+  const resolvedAppId = registeredApp?.appId ?? 'manual';
+  const serviceAddress = registeredApp?.serviceAddress ?? walletId;
+  const appPermissions = registeredApp
+    ? normalizeSessionAppPermissions(input.appPermissions, true)
+    : [];
   const platformFeeEstimateMinor = estimatePlatformFeeMinor(limitMinor);
   const networkFeeEstimateMinor = toMinorUnits(String(CREATE_SESSION_POLICY.estimatedNetworkFee), input.currency);
   const limit = fromMinorUnits(limitMinor, input.currency);
   const chargePolicy = buildSessionChargePolicy({
     purpose: paymentPurpose,
-    fallbackPolicy: verifiedApp?.chargePolicy ?? input.chargePolicy,
+    fallbackPolicy: input.chargePolicy,
     maxChargeAmountMinor,
     currency: input.currency,
     releaseCadence,
@@ -1555,11 +1563,11 @@ export async function createSession(input: CreateSessionInput, walletId: string)
     const [created] = await SessionModel.create([{
       ownerWalletId: walletId,
       publicId,
-      name: registeredApp?.name ?? verifiedApp?.name ?? input.name,
+      name: registeredApp?.name ?? input.name,
       serviceAddress,
       appId: resolvedAppId,
-      appUrl: registeredApp?.url ?? verifiedApp?.url ?? input.appUrl,
-      appTrustLevel: registeredApp ? 'owner-approved' : verifiedApp?.trustLevel ?? input.appTrustLevel,
+      appUrl: registeredApp?.url ?? undefined,
+      appTrustLevel: registeredApp ? 'owner-approved' : 'owner-controlled',
       appPermissions,
       appGrantOwnerWalletId: registeredApp ? walletId : undefined,
       appGrantCreatedAt: registeredApp ? new Date() : undefined,
@@ -1586,7 +1594,7 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       currency: input.currency,
       duration: input.duration,
       status: 'active',
-      iconType: verifiedApp?.iconType ?? input.iconType,
+      iconType: registeredApp ? 'code' : input.iconType,
       expiryTime: expiryAt ? expiryAt.toISOString() : input.expiryTime,
       fiberProvider: fiberProvider.kind,
       fiberNetwork: fiberProvider.network,

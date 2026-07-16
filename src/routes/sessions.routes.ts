@@ -121,8 +121,9 @@ sessionsRouter.post('/recipient-claims/:token/destination-policy', asyncHandler(
   }));
 }));
 
-sessionsRouter.get('/sessions/create-policy', requireAuth, asyncHandler(async (_request, response) => {
-  response.json(getCreateSessionPolicy());
+sessionsRouter.get('/sessions/create-policy', requireAuth, asyncHandler(async (request, response) => {
+  const { walletId } = (request as AuthenticatedRequest).auth;
+  response.json(await getCreateSessionPolicy(walletId));
 }));
 
 sessionsRouter.post('/sessions/destination-policy', requireAuth, asyncHandler(async (request, response) => {

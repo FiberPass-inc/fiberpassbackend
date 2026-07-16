@@ -18,6 +18,7 @@ process.env.FIBERPASS_OPERATOR_LOCK_HASH = '';
 
 const { createAuthChallenge, createStreamTicket, getAuthContextFromStreamTicket, getAuthContextFromToken, revokeAuthToken } = await import('../services/auth.service.js');
 const { createInvoice, createRecipient, runPaymentWorkerOnce } = await import('../services/automation.service.js');
+const { getCreateSessionPolicy } = await import('../services/session.service.js');
 const { createRateLimitMiddleware } = await import('../middleware/rateLimit.middleware.js');
 
 const dbName = 'fiberpass_platform_' + randomUUID().replace(/-/g, '');
@@ -90,12 +91,44 @@ try {
   assert.equal(rateResponses.filter((response) => response.status === 200).length, 3);
   assert.equal(rateResponses.filter((response) => response.status === 429).length, 3);
 
-  await AppModel.create({
-    appId,
-    ownerWalletId: walletId,
+  await AppModel.create([
+    {
+      appId,
+      ownerWalletId: walletId,
+      name: 'Platform integration app',
+      serviceAddress: walletAddress,
+      status: 'active'
+    },
+    {
+      appId: 'other-wallet-app',
+      ownerWalletId: 'other-wallet',
+      name: 'Other wallet app',
+      serviceAddress: walletAddress,
+      status: 'active'
+    },
+    {
+      appId: 'inactive-owned-app',
+      ownerWalletId: walletId,
+      name: 'Inactive owned app',
+      serviceAddress: walletAddress,
+      status: 'revoked'
+    }
+  ]);
+  const createPolicy = await getCreateSessionPolicy(walletId);
+  assert.equal(createPolicy.verifiedApps.length, 1);
+  assert.deepEqual(createPolicy.verifiedApps[0], {
+    id: appId,
     name: 'Platform integration app',
     serviceAddress: walletAddress,
-    status: 'active'
+    url: '',
+    category: 'API',
+    trustLevel: 'owner-approved',
+    description: '',
+    defaultCharge: 0.01,
+    defaultChargeMinor: 1_000_000,
+    chargePolicy: 'This owned app may create charges within the pass rule using an active app API key.',
+    iconType: 'code',
+    permissions: ['charges:create']
   });
   await SessionModel.create({
     ownerWalletId: walletId,
