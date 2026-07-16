@@ -4,6 +4,7 @@ import { bytes } from '@ckb-lumos/codec';
 import { env } from '../config/env.js';
 import { ApiError } from '../lib/errors.js';
 import { fromMinorUnits } from '../lib/money.js';
+import { WalletModel } from '../models/wallet.model.js';
 import { parseCkbAddress } from './ckbChain.service.js';
 import { deriveVaultForWallet, getVaultRuntimeConfig, minimalVaultCellCapacityShannons } from './vault.service.js';
 
@@ -387,7 +388,10 @@ async function executeVaultPlainTransfer(input: {
 
   const operator = operatorSigner();
   const vaultDep = vaultCellDep();
-  const vault = deriveVaultForWallet({ walletId: input.ownerWalletId });
+  const wallet = await WalletModel.findOne({ walletId: input.ownerWalletId }).select('address').lean<{ address: string }>();
+  const vault = wallet
+    ? deriveVaultForWallet({ walletId: input.ownerWalletId, walletAddress: wallet.address })
+    : null;
   if (!vault) {
     throw new ApiError(503, 'USER_VAULT_NOT_CONFIGURED', 'This wallet does not have a configured FiberPass vault.');
   }

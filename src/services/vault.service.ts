@@ -1,8 +1,8 @@
-import { config, helpers, utils } from '@ckb-lumos/lumos';
+import { config, helpers, utils, type Script } from '@ckb-lumos/lumos';
 import { env } from '../config/env.js';
 
 export type VaultHashType = 'data' | 'type' | 'data1' | 'data2';
-export type VaultOwnerLockHashSource = 'wallet-id-derived' | 'user-lock-hash';
+export type VaultOwnerLockHashSource = 'wallet-address' | 'explicit-lock-hash' | 'legacy-wallet-id-derived';
 
 export interface DerivedVaultDto {
   address: string;
@@ -25,6 +25,18 @@ export interface VaultRuntimeConfigDto {
   codeHash: string;
   hashType: VaultHashType;
   operatorLockHash: string;
+}
+
+export interface VaultOwnerReclaimHandoffDto {
+  network: string;
+  vaultAddress: string;
+  vaultScriptHash: string;
+  vaultScript: DerivedVaultDto['script'];
+  ownerAddress: string;
+  ownerLock: Script;
+  ownerLockHash: string;
+  vaultWitnessLock: '0x00';
+  requiresOwnerAuthInput: true;
 }
 
 const SCRIPT_VERSION = 1;
@@ -80,6 +92,11 @@ export function deriveWalletOwnerLockHash(walletId: string): string {
   return ckbHash('fiberpass:owner:' + walletId);
 }
 
+export function ownerLockHashFromAddress(walletAddress: string): string {
+  const ownerLock = helpers.parseAddress(walletAddress, { config: networkConfig() });
+  return utils.computeScriptHash(ownerLock);
+}
+
 export function deriveVaultIdHash(accountIdHash: string): string {
   return ckbHash('fiberpass:vault:' + accountIdHash);
 }
@@ -101,22 +118,20 @@ export function minimalVaultCellCapacityShannons(script: DerivedVaultDto['script
   return capacity;
 }
 
-export function deriveVaultForWallet(input: { walletId: string; ownerLockHash?: string }): DerivedVaultDto | null {
+function deriveVaultWithOwner(input: {
+  walletId: string;
+  ownerLockHash: string;
+  ownerLockHashSource: VaultOwnerLockHashSource;
+}): DerivedVaultDto | null {
   const runtime = getVaultRuntimeConfig();
   if (!runtime.configured) return null;
 
   const accountIdHash = deriveAccountIdHash(input.walletId);
   const vaultIdHash = deriveVaultIdHash(accountIdHash);
-  const ownerLockHash = input.ownerLockHash && isHex(input.ownerLockHash, 32)
-    ? input.ownerLockHash
-    : deriveWalletOwnerLockHash(input.walletId);
-  const ownerLockHashSource: VaultOwnerLockHashSource = input.ownerLockHash && isHex(input.ownerLockHash, 32)
-    ? 'user-lock-hash'
-    : 'wallet-id-derived';
   const args = concatHex(
     byteHex(SCRIPT_VERSION),
     vaultIdHash,
-    ownerLockHash,
+    input.ownerLockHash,
     runtime.operatorLockHash
   );
   const script = {
@@ -131,8 +146,69 @@ export function deriveVaultForWallet(input: { walletId: string; ownerLockHash?: 
     script,
     accountIdHash,
     vaultIdHash,
-    ownerLockHash,
-    ownerLockHashSource,
+    ownerLockHash: input.ownerLockHash,
+    ownerLockHashSource: input.ownerLockHashSource,
     operatorLockHash: runtime.operatorLockHash
   };
+}
+
+export function deriveVaultForWallet(input: {
+  walletId: string;
+  walletAddress?: string;
+  ownerLockHash?: string;
+}): DerivedVaultDto | null {
+  if (input.ownerLockHash && isHex(input.ownerLockHash, 32)) {
+    return deriveVaultWithOwner({
+      walletId: input.walletId,
+      ownerLockHash: input.ownerLockHash.toLowerCase(),
+      ownerLockHashSource: 'explicit-lock-hash'
+    });
+  }
+  if (!input.walletAddress?.trim()) return null;
+  return deriveVaultWithOwner({
+    walletId: input.walletId,
+    ownerLockHash: ownerLockHashFromAddress(input.walletAddress),
+    ownerLockHashSource: 'wallet-address'
+  });
+}
+
+export function deriveLegacyVaultForWallet(walletId: string): DerivedVaultDto | null {
+  return deriveVaultWithOwner({
+    walletId,
+    ownerLockHash: deriveWalletOwnerLockHash(walletId),
+    ownerLockHashSource: 'legacy-wallet-id-derived'
+  });
+}
+
+export function buildVaultOwnerReclaimHandoff(input: {
+  walletId: string;
+  walletAddress: string;
+}): VaultOwnerReclaimHandoffDto | null {
+  const vault = deriveVaultForWallet(input);
+  if (!vault) return null;
+  const ownerLock = helpers.parseAddress(input.walletAddress, { config: networkConfig() });
+  const ownerLockHash = utils.computeScriptHash(ownerLock);
+  if (ownerLockHash !== vault.ownerLockHash) {
+    throw new Error('Vault owner lock hash does not match the authenticated wallet address.');
+  }
+  return {
+    network: env.FIBER_NETWORK,
+    vaultAddress: vault.address,
+    vaultScriptHash: vault.scriptHash,
+    vaultScript: vault.script,
+    ownerAddress: input.walletAddress,
+    ownerLock,
+    ownerLockHash,
+    vaultWitnessLock: '0x00',
+    requiresOwnerAuthInput: true
+  };
+}
+
+export function isVaultOwnerReclaimAuthorized(input: {
+  vault: Pick<DerivedVaultDto, 'ownerLockHash'>;
+  ownerAuthInputLock: Script;
+  vaultWitnessLock: string;
+}): boolean {
+  return input.vaultWitnessLock.toLowerCase() === '0x00'
+    && utils.computeScriptHash(input.ownerAuthInputLock) === input.vault.ownerLockHash;
 }

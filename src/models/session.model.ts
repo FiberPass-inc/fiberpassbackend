@@ -3,6 +3,12 @@ import { Schema, model, type InferSchemaType } from 'mongoose';
 export const SESSION_STATUSES = ['active', 'paused', 'settled', 'revoked', 'expired'] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
+export const SESSION_LIFECYCLE_STATES = ['idle', 'top_up_pending', 'revoke_pending', 'settle_pending'] as const;
+export type SessionLifecycleState = (typeof SESSION_LIFECYCLE_STATES)[number];
+
+export const SESSION_LIFECYCLE_PROVIDER_STATUSES = ['not_started', 'submitted', 'succeeded', 'uncertain'] as const;
+export type SessionLifecycleProviderStatus = (typeof SESSION_LIFECYCLE_PROVIDER_STATUSES)[number];
+
 export const ICON_TYPES = ['cloud', 'code', 'database', 'cpu', 'ai', 'video', 'rpc'] as const;
 export type IconType = (typeof ICON_TYPES)[number];
 
@@ -118,6 +124,18 @@ const sessionSchema = new Schema(
     fiberSessionId: { type: String, trim: true, index: true },
     fiberStatus: { type: String, trim: true, default: 'pending' },
     fiberProofId: { type: String, trim: true },
+    lifecycleState: { type: String, enum: SESSION_LIFECYCLE_STATES, required: true, default: 'idle', index: true },
+    lifecycleOperationId: { type: String, trim: true },
+    lifecycleIdempotencyKey: { type: String, trim: true },
+    lifecycleAmountMinor: { type: Number, min: 0 },
+    lifecycleProviderStatus: { type: String, enum: SESSION_LIFECYCLE_PROVIDER_STATUSES },
+    lifecycleProvider: { type: String, trim: true },
+    lifecycleNetwork: { type: String, trim: true },
+    lifecycleProofId: { type: String, trim: true },
+    lifecycleFailureCode: { type: String, trim: true },
+    lifecycleFailureMessage: { type: String, trim: true },
+    lifecycleStartedAt: { type: Date },
+    lifecycleCompletedAt: { type: Date },
     lastChargeProofId: { type: String, trim: true },
     autoMicroCharges: { type: Boolean, required: true, default: true },
     singleUse: { type: Boolean, required: true, default: false },

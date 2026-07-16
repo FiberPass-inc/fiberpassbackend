@@ -8,7 +8,7 @@ import { liveEvents } from '../lib/liveEvents.js';
 import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, roundMoney, toMinorUnits } from '../lib/money.js';
 import { AppModel, type AppRecord } from '../models/app.model.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
-import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionRecord, type SessionStatus } from '../models/session.model.js';
+import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionLifecycleProviderStatus, type SessionLifecycleState, type SessionRecord, type SessionStatus } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
 import { writeAuditLog } from './audit.service.js';
@@ -231,6 +231,8 @@ interface SessionLike {
   fiberSessionId?: string;
   fiberStatus?: string;
   fiberProofId?: string;
+  lifecycleState?: SessionLifecycleState;
+  lifecycleProviderStatus?: SessionLifecycleProviderStatus;
   lastChargeProofId?: string;
   autoMicroCharges: boolean;
   singleUse: boolean;
@@ -284,6 +286,8 @@ export interface SessionDto {
   fiberSessionId?: string;
   fiberStatus?: string;
   fiberProofId?: string;
+  lifecycleState?: SessionLifecycleState;
+  lifecycleProviderStatus?: SessionLifecycleProviderStatus;
   lastChargeProofId?: string;
   autoMicroCharges: boolean;
   singleUse: boolean;
@@ -521,6 +525,8 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
     fiberSessionId: session.fiberSessionId,
     fiberStatus: session.fiberStatus,
     fiberProofId: session.fiberProofId,
+    lifecycleState: session.lifecycleState ?? 'idle',
+    lifecycleProviderStatus: session.lifecycleProviderStatus,
     lastChargeProofId: session.lastChargeProofId,
     autoMicroCharges: session.autoMicroCharges,
     singleUse: session.singleUse,
@@ -1140,14 +1146,17 @@ export function walletIdFromAddress(address: string): string {
 }
 
 export async function reconcileWalletBalanceWithCurrentVault(walletId: string): Promise<void> {
-  const vault = deriveVaultForWallet({ walletId });
+  const wallet = await WalletModel.findOne({ walletId })
+    .select('address balance balanceMinor currency')
+    .lean<{ address: string; balance?: number | null; balanceMinor?: number | null; currency?: string | null }>();
+  if (!wallet) return;
+  const vault = deriveVaultForWallet({ walletId, walletAddress: wallet.address });
   if (!vault) {
     await ensureWalletMoneyFields(walletId);
     return;
   }
 
-  const [wallet, sessions, fundingRecords] = await Promise.all([
-    WalletModel.findOne({ walletId }).select('balance balanceMinor currency').lean<{ balance?: number | null; balanceMinor?: number | null; currency?: string | null }>(),
+  const [sessions, fundingRecords] = await Promise.all([
     SessionModel.find({ ownerWalletId: walletId }).select('status limit limitMinor spent spentMinor currency').lean<Array<{ status?: string | null; limit?: number | null; limitMinor?: number | null; spent?: number | null; spentMinor?: number | null; currency?: string | null }>>(),
     WalletFundingModel.find({
       walletId,
@@ -1156,8 +1165,6 @@ export async function reconcileWalletBalanceWithCurrentVault(walletId: string): 
       vaultScriptHash: vault.scriptHash
     }).select('amount amountMinor currency').lean<Array<{ amount?: number | null; amountMinor?: number | null; currency?: string | null }>>()
   ]);
-
-  if (!wallet) return;
 
   const fundedMinor = fundingRecords.reduce((total, funding) => {
     return total + fallbackMinorUnits(funding.amountMinor, funding.amount, funding.currency ?? CREATE_SESSION_POLICY.currency);
@@ -1437,18 +1444,18 @@ export async function createSession(input: CreateSessionInput, walletId: string)
     nextReleaseAt
   });
 
-  const wallet = await WalletModel.findOneAndUpdate(
-    { walletId, balanceMinor: { $gte: limitMinor } },
-    { $inc: { balanceMinor: -limitMinor, balance: -limit } },
-    { new: true }
-  );
+  let createdSession: SessionRecord | undefined;
+  await SessionModel.db.transaction(async (mongoSession) => {
+    const wallet = await WalletModel.findOneAndUpdate(
+      { walletId, balanceMinor: { $gte: limitMinor } },
+      { $inc: { balanceMinor: -limitMinor, balance: -limit } },
+      { new: true, session: mongoSession }
+    );
+    if (!wallet) {
+      throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this FiberPass limit.');
+    }
 
-  if (!wallet) {
-    throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this FiberPass limit.');
-  }
-
-  try {
-    const createdSession = await SessionModel.create({
+    const [created] = await SessionModel.create([{
       ownerWalletId: walletId,
       publicId,
       name: registeredApp?.name ?? verifiedApp?.name ?? input.name,
@@ -1487,18 +1494,20 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       fiberProvider: fiberProvider.kind,
       fiberNetwork: fiberProvider.network,
       fiberStatus: 'active',
+      lifecycleState: 'idle',
       autoMicroCharges: effectiveAutoMicroCharges,
       singleUse: effectiveSingleUse,
       logs: [newLog(paymentPurpose === 'app_session' ? 'Session Stream Limit Created' : 'Payment Rule Reserve Created')]
-    });
+    }], { session: mongoSession });
+    createdSession = created.toObject() as SessionRecord;
+  });
 
-    await sendSessionRecipientInvites(createdSession.toObject() as SessionRecord, preparedRecipients.invites);
-    await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: resolvedAppId, appGrantCreated: Boolean(registeredApp), paymentPurpose, releaseCadence, nextReleaseAt, recipientInviteCount: preparedRecipients.invites.length } });
-    void runScheduledLiquidityPreparation({ ownerWalletId: walletId, sessionId: publicId, limit: 1 }).catch(() => undefined);
-  } catch (error) {
-    await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: limitMinor, balance: limit } });
-    throw error;
+  if (!createdSession) {
+    throw new ApiError(500, 'SESSION_CREATE_FAILED', 'Session transaction completed without creating a pass.');
   }
+  await sendSessionRecipientInvites(createdSession, preparedRecipients.invites).catch(() => undefined);
+  await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: resolvedAppId, appGrantCreated: Boolean(registeredApp), paymentPurpose, releaseCadence, nextReleaseAt, recipientInviteCount: preparedRecipients.invites.length } }).catch(() => undefined);
+  void runScheduledLiquidityPreparation({ ownerWalletId: walletId, sessionId: publicId, limit: 1 }).catch(() => undefined);
 
   const overview = await getSessionsOverview(walletId);
   liveEvents.publish('overview:' + walletId, overview);
@@ -1582,50 +1591,165 @@ export async function resendRecipientInvites(publicId: string, walletId: string)
   return overview;
 }
 
-export async function topUpSession(publicId: string, walletId: string, amount = 1): Promise<SessionsOverviewDto> {
-  const session = await getSessionOrThrow(publicId, walletId);
-  const topUpMinor = toMinorUnits(String(amount), session.currency);
+function sessionTransitionPending(session: {
+  lifecycleState?: string | null;
+  lifecycleOperationId?: string | null;
+  lifecycleProviderStatus?: string | null;
+}): ApiError {
+  return new ApiError(409, 'SESSION_TRANSITION_PENDING', 'This pass has a balance transition in progress.', {
+    lifecycleState: session.lifecycleState,
+    operationId: session.lifecycleOperationId,
+    providerStatus: session.lifecycleProviderStatus
+  });
+}
+
+async function completeTopUpLifecycle(publicId: string, walletId: string, operationId: string): Promise<boolean> {
+  let completed = false;
+  await SessionModel.db.transaction(async (mongoSession) => {
+    const session = await SessionModel.findOne({
+      publicId,
+      ownerWalletId: walletId,
+      lifecycleState: 'top_up_pending',
+      lifecycleOperationId: operationId,
+      lifecycleProviderStatus: 'succeeded'
+    }).session(mongoSession);
+    if (!session) return;
+
+    const amountMinor = session.lifecycleAmountMinor ?? 0;
+    const nextLimitMinor = sessionLimitMinor(session.toObject()) + amountMinor;
+    session.limitMinor = nextLimitMinor;
+    session.limit = fromMinorUnits(nextLimitMinor, session.currency);
+    session.fiberProvider = session.lifecycleProvider;
+    session.fiberNetwork = session.lifecycleNetwork;
+    session.fiberProofId = session.lifecycleProofId;
+    session.lifecycleState = 'idle';
+    session.lifecycleCompletedAt = new Date();
+    session.lifecycleFailureCode = undefined;
+    session.lifecycleFailureMessage = undefined;
+    prependLogs(session, newLog('Session Allocation Top Up', amountMinor, session.currency));
+    await session.save({ session: mongoSession });
+    completed = true;
+  });
+  return completed;
+}
+
+export async function topUpSession(
+  publicId: string,
+  walletId: string,
+  amount = 1,
+  idempotencyKey?: string
+): Promise<SessionsOverviewDto> {
+  const initial = await getSessionOrThrow(publicId, walletId);
+  const topUpMinor = toMinorUnits(String(amount), initial.currency);
   if (topUpMinor <= 0) {
     throw new ApiError(400, 'INVALID_TOP_UP_AMOUNT', 'Top up amount must be greater than zero.');
   }
-
-  if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
+  if (!OPEN_STATUSES.includes(initial.status as SessionStatus)) {
     throw new ApiError(409, 'SESSION_CLOSED', 'Only active or paused sessions can be topped up.');
   }
 
-  await reconcileWalletBalanceWithCurrentVault(walletId);
-  const topUpAmount = fromMinorUnits(topUpMinor, session.currency);
-  const wallet = await WalletModel.findOneAndUpdate(
-    { walletId, balanceMinor: { $gte: topUpMinor } },
-    { $inc: { balanceMinor: -topUpMinor, balance: -topUpAmount } },
-    { new: true }
-  );
-
-  if (!wallet) {
-    throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this top up.');
+  const operationKey = cleanOptionalString(idempotencyKey) ?? randomUUID();
+  if (initial.lifecycleIdempotencyKey === operationKey) {
+    if (initial.lifecycleState === 'idle' && initial.lifecycleCompletedAt) {
+      return getSessionsOverview(walletId);
+    }
+    if (initial.lifecycleState === 'top_up_pending' && initial.lifecycleProviderStatus === 'succeeded' && initial.lifecycleOperationId) {
+      await completeTopUpLifecycle(publicId, walletId, initial.lifecycleOperationId);
+      return getSessionsOverview(walletId);
+    }
+  }
+  if (initial.lifecycleState && initial.lifecycleState !== 'idle') {
+    throw sessionTransitionPending(initial);
   }
 
+  await reconcileWalletBalanceWithCurrentVault(walletId);
+  const operationId = randomUUID();
+  const topUpAmount = fromMinorUnits(topUpMinor, initial.currency);
+  let replayed = false;
+  let claimedSession: SessionRecord | undefined;
+
+  await SessionModel.db.transaction(async (mongoSession) => {
+    replayed = false;
+    claimedSession = undefined;
+    const session = await SessionModel.findOne({ publicId, ownerWalletId: walletId }).session(mongoSession);
+    if (!session) throw new ApiError(404, 'SESSION_NOT_FOUND', 'FiberPass session was not found.');
+    if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
+      throw new ApiError(409, 'SESSION_CLOSED', 'Only active or paused sessions can be topped up.');
+    }
+    if (session.lifecycleIdempotencyKey === operationKey && session.lifecycleState === 'idle' && session.lifecycleCompletedAt) {
+      replayed = true;
+      return;
+    }
+    if (session.lifecycleState && session.lifecycleState !== 'idle') {
+      throw sessionTransitionPending(session);
+    }
+
+    const wallet = await WalletModel.findOneAndUpdate(
+      { walletId, balanceMinor: { $gte: topUpMinor } },
+      { $inc: { balanceMinor: -topUpMinor, balance: -topUpAmount } },
+      { new: true, session: mongoSession }
+    );
+    if (!wallet) {
+      throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this top up.');
+    }
+
+    session.lifecycleState = 'top_up_pending';
+    session.lifecycleOperationId = operationId;
+    session.lifecycleIdempotencyKey = operationKey;
+    session.lifecycleAmountMinor = topUpMinor;
+    session.lifecycleProviderStatus = 'not_started';
+    session.lifecycleStartedAt = new Date();
+    session.lifecycleCompletedAt = undefined;
+    session.lifecycleFailureCode = undefined;
+    session.lifecycleFailureMessage = undefined;
+    await session.save({ session: mongoSession });
+    claimedSession = session.toObject() as SessionRecord;
+  });
+
+  if (replayed) return getSessionsOverview(walletId);
+  if (!claimedSession) {
+    throw new ApiError(500, 'SESSION_TOP_UP_CLAIM_FAILED', 'Top-up transaction completed without claiming the pass.');
+  }
+
+  await SessionModel.updateOne(
+    { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleProviderStatus: 'not_started' },
+    { $set: { lifecycleProviderStatus: 'submitted' } }
+  );
+
+  let result: Awaited<ReturnType<typeof topUpFiberSessionIfOpen>>;
   try {
-    const result = await topUpFiberSessionIfOpen({
-      session,
+    result = await topUpFiberSessionIfOpen({
+      session: claimedSession,
       publicId,
       walletId,
       amountMinor: topUpMinor
     });
-
-    const nextLimitMinor = sessionLimitMinor(session.toObject()) + topUpMinor;
-    session.limitMinor = nextLimitMinor;
-    session.limit = fromMinorUnits(nextLimitMinor, session.currency);
-    session.fiberProvider = result.provider;
-    session.fiberNetwork = result.network;
-    session.fiberProofId = result.proofId;
-    prependLogs(session, newLog('Session Allocation Top Up', topUpMinor, session.currency));
-    await session.save();
-    await writeAuditLog({ actorWalletId: walletId, action: 'session.top_up', targetType: 'session', targetId: publicId, metadata: { amountMinor: topUpMinor, proofId: result.proofId } });
   } catch (error) {
-    await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: topUpMinor, balance: topUpAmount } });
-    throw error;
+    const failure = failureFromError(error);
+    await SessionModel.updateOne(
+      { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleState: 'top_up_pending' },
+      { $set: { lifecycleProviderStatus: 'uncertain', lifecycleFailureCode: failure.code, lifecycleFailureMessage: failure.message } }
+    );
+    throw new ApiError(503, 'SESSION_TOP_UP_OUTCOME_UNCERTAIN', 'The top-up provider outcome must be reconciled before retrying.', { operationId });
   }
+
+  const providerMarked = await SessionModel.updateOne(
+    { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleState: 'top_up_pending' },
+    {
+      $set: {
+        lifecycleProviderStatus: 'succeeded',
+        lifecycleProvider: result.provider,
+        lifecycleNetwork: result.network,
+        lifecycleProofId: result.proofId
+      }
+    }
+  );
+  if (providerMarked.matchedCount !== 1) {
+    throw new ApiError(503, 'SESSION_TOP_UP_FINALIZATION_PENDING', 'The provider top up succeeded and database finalization is pending.', { operationId });
+  }
+
+  await completeTopUpLifecycle(publicId, walletId, operationId);
+  await writeAuditLog({ actorWalletId: walletId, action: 'session.top_up', targetType: 'session', targetId: publicId, metadata: { amountMinor: topUpMinor, proofId: result.proofId, operationId, idempotencyKey: operationKey } }).catch(() => undefined);
 
   const overview = await getSessionsOverview(walletId);
   liveEvents.publish('overview:' + walletId, overview);
@@ -1636,6 +1760,9 @@ export async function togglePauseSession(publicId: string, walletId: string): Pr
   const session = await getSessionOrThrow(publicId, walletId);
   if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
     throw new ApiError(409, 'SESSION_CLOSED', 'Only active or paused sessions can be paused or resumed.');
+  }
+  if (session.lifecycleState && session.lifecycleState !== 'idle') {
+    throw sessionTransitionPending(session);
   }
 
   session.status = session.status === 'paused' ? 'active' : 'paused';
@@ -1649,70 +1776,173 @@ export async function togglePauseSession(publicId: string, walletId: string): Pr
   return overview;
 }
 
-export async function revokeSession(publicId: string, walletId: string): Promise<SessionsOverviewDto> {
-  const session = await getSessionOrThrow(publicId, walletId);
-  if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
-    throw new ApiError(409, 'SESSION_CLOSED', 'Session is already closed.');
+type CloseSessionReason = 'revoked' | 'settled';
+
+async function completeCloseLifecycle(input: {
+  publicId: string;
+  walletId: string;
+  operationId: string;
+  reason: CloseSessionReason;
+}): Promise<boolean> {
+  let completed = false;
+  await SessionModel.db.transaction(async (mongoSession) => {
+    const session = await SessionModel.findOne({
+      publicId: input.publicId,
+      ownerWalletId: input.walletId,
+      lifecycleState: input.reason === 'revoked' ? 'revoke_pending' : 'settle_pending',
+      lifecycleOperationId: input.operationId,
+      lifecycleProviderStatus: 'succeeded'
+    }).session(mongoSession);
+    if (!session) return;
+
+    const refundMinor = session.lifecycleAmountMinor ?? 0;
+    const refundAmount = fromMinorUnits(refundMinor, session.currency);
+    session.status = input.reason;
+    session.fiberProvider = session.lifecycleProvider;
+    session.fiberNetwork = session.lifecycleNetwork;
+    session.fiberStatus = input.reason;
+    session.fiberProofId = session.lifecycleProofId;
+    session.expiryTime = input.reason === 'revoked' ? 'Revoked by Owner' : 'Settled by User';
+    session.lifecycleState = 'idle';
+    session.lifecycleCompletedAt = new Date();
+    session.lifecycleFailureCode = undefined;
+    session.lifecycleFailureMessage = undefined;
+    prependLogs(session, newLog(
+      (input.reason === 'revoked' ? 'Session Revoked' : 'Session Settled')
+        + ' (Refunded ' + refundAmount.toLocaleString('en-US') + ' ' + session.currency + ')'
+    ));
+    await session.save({ session: mongoSession });
+
+    const walletResult = await WalletModel.updateOne(
+      { walletId: input.walletId },
+      { $inc: { balanceMinor: refundMinor, balance: refundAmount } },
+      { session: mongoSession }
+    );
+    if (walletResult.matchedCount !== 1) {
+      throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connected wallet was not found while refunding the closed pass.');
+    }
+    completed = true;
+  });
+  return completed;
+}
+
+async function closeSession(
+  publicId: string,
+  walletId: string,
+  reason: CloseSessionReason,
+  idempotencyKey?: string
+): Promise<SessionsOverviewDto> {
+  const initial = await getSessionOrThrow(publicId, walletId);
+  if (initial.status === reason) return getSessionsOverview(walletId);
+  if (!OPEN_STATUSES.includes(initial.status as SessionStatus)) {
+    throw new ApiError(409, 'SESSION_CLOSED', 'Session is already closed with status ' + initial.status + '.');
   }
 
-  const refundMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
-  const refundAmount = fromMinorUnits(refundMinor, session.currency);
-  const result = await settleFiberSessionIfOpen({
-    session,
-    publicId,
-    amountMinor: refundMinor,
-    currency: session.currency,
-    reason: 'revoked'
+  const lifecycleState = reason === 'revoked' ? 'revoke_pending' : 'settle_pending';
+  const operationKey = cleanOptionalString(idempotencyKey) ?? randomUUID();
+  if (
+    initial.lifecycleIdempotencyKey === operationKey
+    && initial.lifecycleState === lifecycleState
+    && initial.lifecycleProviderStatus === 'succeeded'
+    && initial.lifecycleOperationId
+  ) {
+    await completeCloseLifecycle({ publicId, walletId, operationId: initial.lifecycleOperationId, reason });
+    return getSessionsOverview(walletId);
+  }
+  if (initial.lifecycleState && initial.lifecycleState !== 'idle') {
+    throw sessionTransitionPending(initial);
+  }
+
+  const operationId = randomUUID();
+  let claimedSession: SessionRecord | undefined;
+  await SessionModel.db.transaction(async (mongoSession) => {
+    claimedSession = undefined;
+    const session = await SessionModel.findOne({ publicId, ownerWalletId: walletId }).session(mongoSession);
+    if (!session) throw new ApiError(404, 'SESSION_NOT_FOUND', 'FiberPass session was not found.');
+    if (session.status === reason) return;
+    if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
+      throw new ApiError(409, 'SESSION_CLOSED', 'Session is already closed with status ' + session.status + '.');
+    }
+    if (session.lifecycleState && session.lifecycleState !== 'idle') {
+      throw sessionTransitionPending(session);
+    }
+    if ((session.reservedMinor ?? 0) > 0) {
+      throw new ApiError(409, 'SESSION_CHARGES_PENDING', 'Pending charges must be finalized or released before closing this pass.');
+    }
+
+    const refundMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
+    session.lifecycleState = lifecycleState;
+    session.lifecycleOperationId = operationId;
+    session.lifecycleIdempotencyKey = operationKey;
+    session.lifecycleAmountMinor = refundMinor;
+    session.lifecycleProviderStatus = 'not_started';
+    session.lifecycleStartedAt = new Date();
+    session.lifecycleCompletedAt = undefined;
+    session.lifecycleFailureCode = undefined;
+    session.lifecycleFailureMessage = undefined;
+    await session.save({ session: mongoSession });
+    claimedSession = session.toObject() as SessionRecord;
   });
 
-  session.status = 'revoked';
-  session.fiberProvider = result.provider;
-  session.fiberNetwork = result.network;
-  session.fiberStatus = 'revoked';
-  session.fiberProofId = result.proofId;
-  session.expiryTime = 'Revoked by Owner';
-  prependLogs(session, newLog('Session Revoked (Refunded ' + refundAmount.toLocaleString('en-US') + ' ' + session.currency + ')'));
-  await session.save();
+  if (!claimedSession) return getSessionsOverview(walletId);
+  await SessionModel.updateOne(
+    { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleProviderStatus: 'not_started' },
+    { $set: { lifecycleProviderStatus: 'submitted' } }
+  );
 
-  await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: refundMinor, balance: refundAmount } });
-  await writeAuditLog({ actorWalletId: walletId, action: 'session.revoked', targetType: 'session', targetId: publicId, metadata: { refundMinor, proofId: result.proofId } });
+  let result: Awaited<ReturnType<typeof settleFiberSessionIfOpen>>;
+  try {
+    result = await settleFiberSessionIfOpen({
+      session: claimedSession,
+      publicId,
+      amountMinor: claimedSession.lifecycleAmountMinor ?? 0,
+      currency: claimedSession.currency,
+      reason
+    });
+  } catch (error) {
+    const failure = failureFromError(error);
+    await SessionModel.updateOne(
+      { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleState },
+      { $set: { lifecycleProviderStatus: 'uncertain', lifecycleFailureCode: failure.code, lifecycleFailureMessage: failure.message } }
+    );
+    throw new ApiError(503, 'SESSION_CLOSE_OUTCOME_UNCERTAIN', 'The provider close outcome must be reconciled before retrying.', { operationId });
+  }
+
+  const providerMarked = await SessionModel.updateOne(
+    { publicId, ownerWalletId: walletId, lifecycleOperationId: operationId, lifecycleState },
+    {
+      $set: {
+        lifecycleProviderStatus: 'succeeded',
+        lifecycleProvider: result.provider,
+        lifecycleNetwork: result.network,
+        lifecycleProofId: result.proofId
+      }
+    }
+  );
+  if (providerMarked.matchedCount !== 1) {
+    throw new ApiError(503, 'SESSION_CLOSE_FINALIZATION_PENDING', 'The provider close succeeded and database finalization is pending.', { operationId });
+  }
+
+  await completeCloseLifecycle({ publicId, walletId, operationId, reason });
+  await writeAuditLog({
+    actorWalletId: walletId,
+    action: reason === 'revoked' ? 'session.revoked' : 'session.settled',
+    targetType: 'session',
+    targetId: publicId,
+    metadata: { refundMinor: claimedSession.lifecycleAmountMinor ?? 0, proofId: result.proofId, operationId, idempotencyKey: operationKey }
+  }).catch(() => undefined);
 
   const overview = await getSessionsOverview(walletId);
   liveEvents.publish('overview:' + walletId, overview);
   return overview;
 }
 
-export async function settleSession(publicId: string, walletId: string): Promise<SessionsOverviewDto> {
-  const session = await getSessionOrThrow(publicId, walletId);
-  if (!OPEN_STATUSES.includes(session.status as SessionStatus)) {
-    throw new ApiError(409, 'SESSION_CLOSED', 'Session is already closed.');
-  }
+export async function revokeSession(publicId: string, walletId: string, idempotencyKey?: string): Promise<SessionsOverviewDto> {
+  return closeSession(publicId, walletId, 'revoked', idempotencyKey);
+}
 
-  const refundMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - sessionSpentMinor(session.toObject()));
-  const refundAmount = fromMinorUnits(refundMinor, session.currency);
-  const result = await settleFiberSessionIfOpen({
-    session,
-    publicId,
-    amountMinor: refundMinor,
-    currency: session.currency,
-    reason: 'settled'
-  });
-
-  session.status = 'settled';
-  session.fiberProvider = result.provider;
-  session.fiberNetwork = result.network;
-  session.fiberStatus = 'settled';
-  session.fiberProofId = result.proofId;
-  session.expiryTime = 'Settled by User';
-  prependLogs(session, newLog('Session Settled (Refunded ' + refundAmount.toLocaleString('en-US') + ' ' + session.currency + ')'));
-  await session.save();
-
-  await WalletModel.updateOne({ walletId }, { $inc: { balanceMinor: refundMinor, balance: refundAmount } });
-  await writeAuditLog({ actorWalletId: walletId, action: 'session.settled', targetType: 'session', targetId: publicId, metadata: { refundMinor, proofId: result.proofId } });
-
-  const overview = await getSessionsOverview(walletId);
-  liveEvents.publish('overview:' + walletId, overview);
-  return overview;
+export async function settleSession(publicId: string, walletId: string, idempotencyKey?: string): Promise<SessionsOverviewDto> {
+  return closeSession(publicId, walletId, 'settled', idempotencyKey);
 }
 
 function normalizedAddress(value?: string): string {
@@ -1754,6 +1984,9 @@ export function assertDirectAppChargeAuthorized(session: SessionRecord, input: C
 
 export function assertChargePreflight(session: SessionRecord, input: ChargeSessionInput, amountMinor: number): void {
   assertDirectAppChargeAuthorized(session, input);
+  if (session.lifecycleState && session.lifecycleState !== 'idle') {
+    throw new ApiError(409, 'SESSION_TRANSITION_PENDING', 'This pass has a balance transition in progress; charges are temporarily blocked.');
+  }
   if (session.status !== 'active') {
     throw new ApiError(409, 'SESSION_NOT_CHARGEABLE', 'Session is ' + session.status + '; charges are blocked.');
   }

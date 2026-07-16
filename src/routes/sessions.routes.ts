@@ -64,7 +64,12 @@ const createSessionSchema = z.object({
 });
 
 const topUpSchema = z.object({
-  amount: z.coerce.number().positive().max(100000).default(1)
+  amount: z.coerce.number().positive().max(100000).default(1),
+  idempotencyKey: z.string().trim().min(8).max(160).optional()
+});
+
+const lifecycleSchema = z.object({
+  idempotencyKey: z.string().trim().min(8).max(160).optional()
 });
 
 const appGrantSchema = z.object({
@@ -129,8 +134,8 @@ sessionsRouter.post('/sessions/:id/app-grant', requireAuth, asyncHandler(async (
 sessionsRouter.post('/sessions/:id/top-up', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   const { id } = paramsSchema.parse(request.params);
-  const { amount } = topUpSchema.parse(request.body ?? {});
-  response.json(await topUpSession(id, walletId, amount));
+  const { amount, idempotencyKey } = topUpSchema.parse(request.body ?? {});
+  response.json(await topUpSession(id, walletId, amount, request.get('Idempotency-Key') ?? idempotencyKey));
 }));
 
 sessionsRouter.post('/sessions/:id/recipient-invites/resend', requireAuth, asyncHandler(async (request, response) => {
@@ -148,19 +153,22 @@ sessionsRouter.post('/sessions/:id/toggle-pause', requireAuth, asyncHandler(asyn
 sessionsRouter.post('/sessions/:id/revoke', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   const { id } = paramsSchema.parse(request.params);
-  response.json(await revokeSession(id, walletId));
+  const { idempotencyKey } = lifecycleSchema.parse(request.body ?? {});
+  response.json(await revokeSession(id, walletId, request.get('Idempotency-Key') ?? idempotencyKey));
 }));
 
 sessionsRouter.post('/sessions/:id/settle', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   const { id } = paramsSchema.parse(request.params);
-  response.json(await settleSession(id, walletId));
+  const { idempotencyKey } = lifecycleSchema.parse(request.body ?? {});
+  response.json(await settleSession(id, walletId, request.get('Idempotency-Key') ?? idempotencyKey));
 }));
 
 sessionsRouter.post('/sessions/:id/close', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   const { id } = paramsSchema.parse(request.params);
-  response.json(await settleSession(id, walletId));
+  const { idempotencyKey } = lifecycleSchema.parse(request.body ?? {});
+  response.json(await settleSession(id, walletId, request.get('Idempotency-Key') ?? idempotencyKey));
 }));
 
 

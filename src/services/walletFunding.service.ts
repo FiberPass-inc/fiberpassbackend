@@ -22,7 +22,7 @@ import {
   type CkbLiveCell,
   type CkbLockActivity
 } from './ckbChain.service.js';
-import { deriveVaultForWallet, getVaultRuntimeConfig, minimalVaultCellCapacityShannons, type DerivedVaultDto } from './vault.service.js';
+import { deriveLegacyVaultForWallet, deriveVaultForWallet, getVaultRuntimeConfig, minimalVaultCellCapacityShannons, type DerivedVaultDto } from './vault.service.js';
 
 const FUNDING_CURRENCY = 'CKB';
 const MIN_FUNDING_MINOR = toMinorUnits('138', FUNDING_CURRENCY);
@@ -53,6 +53,12 @@ export interface WalletFundingConfigDto {
     address?: string;
     scriptHash?: string;
     ownerLockHashSource?: string;
+    ownerLockHash?: string;
+    legacyRecovery?: {
+      address: string;
+      scriptHash: string;
+      mode: 'operator-migration-required';
+    };
   };
 }
 
@@ -144,8 +150,9 @@ function minimumFundingMinor(vault?: DerivedVaultDto | null): number {
   return Math.max(MIN_FUNDING_MINOR, vault ? minimalVaultCellCapacityShannons(vault.script) : MIN_FUNDING_MINOR);
 }
 
-function getFundingConfig(walletId?: string): WalletFundingConfigDto {
-  const vault = walletId ? deriveVaultForWallet({ walletId }) : null;
+function getFundingConfig(wallet?: Pick<WalletRecord, 'walletId' | 'address'>): WalletFundingConfigDto {
+  const vault = wallet ? deriveVaultForWallet({ walletId: wallet.walletId, walletAddress: wallet.address }) : null;
+  const legacyVault = wallet ? deriveLegacyVaultForWallet(wallet.walletId) : null;
   const vaultRuntime = getVaultRuntimeConfig();
   const depositAddress = vault?.address ?? env.FIBERPASS_TREASURY_ADDRESS;
   const depositMode = vault ? 'vault' : 'treasury';
@@ -169,14 +176,22 @@ function getFundingConfig(walletId?: string): WalletFundingConfigDto {
       configured: vaultRuntime.configured,
       address: vault?.address,
       scriptHash: vault?.scriptHash,
-      ownerLockHashSource: vault?.ownerLockHashSource
+      ownerLockHashSource: vault?.ownerLockHashSource,
+      ownerLockHash: vault?.ownerLockHash,
+      legacyRecovery: legacyVault && legacyVault.scriptHash !== vault?.scriptHash
+        ? {
+            address: legacyVault.address,
+            scriptHash: legacyVault.scriptHash,
+            mode: 'operator-migration-required'
+          }
+        : undefined
     }
   };
 }
 
-function requireFundingConfig(walletId: string): WalletFundingConfigDto & { vaultDetails?: DerivedVaultDto } {
-  const vaultDetails = deriveVaultForWallet({ walletId }) ?? undefined;
-  const config = getFundingConfig(walletId);
+function requireFundingConfig(wallet: Pick<WalletRecord, 'walletId' | 'address'>): WalletFundingConfigDto & { vaultDetails?: DerivedVaultDto } {
+  const vaultDetails = deriveVaultForWallet({ walletId: wallet.walletId, walletAddress: wallet.address }) ?? undefined;
+  const config = getFundingConfig(wallet);
   if (!config.configured) {
     throw new ApiError(503, 'FUNDING_ADDRESS_NOT_CONFIGURED', 'Wallet funding is unavailable until FiberPass vault deployment env is configured on the backend.');
   }
@@ -245,49 +260,74 @@ async function applyConfirmedFunding(input: {
   funding: WalletFundingDocument | null;
   deposit: CkbDepositOutput;
   proofId: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const { walletId, funding, deposit, proofId } = input;
   if (!funding) throw new ApiError(404, 'FUNDING_REQUEST_NOT_FOUND', 'Wallet funding request was not found.');
+  const now = new Date();
+  const creditedMinor = deposit.capacityShannons;
+  const amount = fromMinorUnits(creditedMinor, funding.currency);
+  let requestedAmountMinor = funding.amountMinor;
+  let credited = false;
 
-  const outPointExists = await WalletFundingModel.exists({
-    fundingId: { $ne: funding.fundingId },
-    chainOutPoint: deposit.outPoint,
-    status: 'confirmed'
-  });
-  if (outPointExists) {
-    throw new ApiError(409, 'FUNDING_OUTPOINT_ALREADY_USED', 'This vault deposit output has already been credited.');
+  try {
+    await WalletFundingModel.db.transaction(async (mongoSession) => {
+      const current = await WalletFundingModel.findOne({
+        walletId,
+        fundingId: funding.fundingId
+      }).session(mongoSession);
+      if (!current) throw new ApiError(404, 'FUNDING_REQUEST_NOT_FOUND', 'Wallet funding request was not found.');
+      if (current.status === 'confirmed') {
+        if (current.chainOutPoint !== deposit.outPoint || current.proofId !== proofId) {
+          throw new ApiError(409, 'FUNDING_ALREADY_CONFIRMED', 'This funding request was confirmed with a different deposit proof.');
+        }
+        credited = false;
+        return;
+      }
+      requestedAmountMinor = current.amountMinor;
+
+      const confirmed = await WalletFundingModel.findOneAndUpdate(
+        { _id: current._id, status: 'pending' },
+        {
+          $set: {
+            status: 'confirmed',
+            proofId,
+            chainTxHash: deposit.txHash,
+            chainOutputIndex: deposit.outputIndex,
+            chainOutPoint: deposit.outPoint,
+            chainBlockHash: deposit.blockHash,
+            chainBlockNumber: deposit.blockNumber,
+            chainCapacityShannons: deposit.capacityShannons,
+            chainConfirmedAt: now,
+            confirmedAt: now,
+            amountMinor: creditedMinor,
+            amount
+          }
+        },
+        { new: true, session: mongoSession }
+      );
+      if (!confirmed) throw new ApiError(409, 'FUNDING_TRANSITION_CONFLICT', 'Funding confirmation is already being processed.');
+
+      const walletResult = await WalletModel.updateOne(
+        { walletId },
+        {
+          $set: { currency: FUNDING_CURRENCY },
+          $inc: { balanceMinor: creditedMinor, balance: amount }
+        },
+        { session: mongoSession }
+      );
+      if (walletResult.matchedCount !== 1) {
+        throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connected wallet was not found while crediting funding.');
+      }
+      credited = true;
+    });
+  } catch (error) {
+    if (error && typeof error === 'object' && (error as { code?: unknown }).code === 11000) {
+      throw new ApiError(409, 'FUNDING_OUTPOINT_ALREADY_USED', 'This vault deposit output has already been credited.');
+    }
+    throw error;
   }
 
-  const now = new Date();
-  const requestedAmountMinor = funding.amountMinor;
-  const creditedMinor = deposit.capacityShannons;
-  funding.status = 'confirmed';
-  funding.proofId = proofId;
-  funding.chainTxHash = deposit.txHash;
-  funding.chainOutputIndex = deposit.outputIndex;
-  funding.chainOutPoint = deposit.outPoint;
-  funding.chainBlockHash = deposit.blockHash;
-  funding.chainBlockNumber = deposit.blockNumber;
-  funding.chainCapacityShannons = deposit.capacityShannons;
-  funding.chainConfirmedAt = now;
-  funding.confirmedAt = now;
-  funding.amountMinor = creditedMinor;
-  funding.amount = fromMinorUnits(creditedMinor, funding.currency);
-  await funding.save();
-
-  const amount = fromMinorUnits(creditedMinor, funding.currency);
-  await WalletModel.updateOne(
-    { walletId },
-    {
-      $set: { currency: FUNDING_CURRENCY },
-      $inc: {
-        balanceMinor: creditedMinor,
-        balance: amount
-      }
-    }
-  );
-
-  await writeAuditLog({
+  if (credited) await writeAuditLog({
     actorWalletId: walletId,
     actorAddress: funding.walletAddress,
     action: 'wallet_funding.confirmed',
@@ -302,6 +342,7 @@ async function applyConfirmedFunding(input: {
       capacityShannons: deposit.capacityShannons
     }
   });
+  return credited;
 }
 
 function emptyBalance(status: ChainBalanceStatus, error?: string): WalletChainBalanceDto {
@@ -330,7 +371,7 @@ function chainActivityToDto(input: { item: CkbLockActivity; label: string; sourc
 }
 
 async function getWalletChainState(walletId: string, address: string): Promise<WalletChainStateDto> {
-  const vault = deriveVaultForWallet({ walletId });
+  const vault = deriveVaultForWallet({ walletId, walletAddress: address });
   let walletBalance: WalletChainStateDto['wallet'] = { address, ...emptyBalance(env.CKB_TESTNET_INDEXER_URL ? 'ok' : 'not_configured') };
   let vaultBalance: WalletChainStateDto['vault'];
   const activities: WalletChainActivityDto[] = [];
@@ -512,7 +553,7 @@ async function buildFundingOverview(walletId: string, recoveredDeposits = 0): Pr
   const chain = await getWalletChainState(walletId, wallet.address);
   const activities = await buildWalletActivities(walletId, chain);
   return {
-    config: getFundingConfig(walletId),
+    config: getFundingConfig(wallet.toObject()),
     requests: requests.map(toFundingDto),
     chain,
     activities,
@@ -564,7 +605,7 @@ export async function listWalletFunding(walletId: string): Promise<WalletFunding
 
 export async function createWalletFundingRequest(walletId: string, amount: number): Promise<WalletFundingRequestDto> {
   const wallet = await getWalletOrThrow(walletId);
-  const config = requireFundingConfig(walletId);
+  const config = requireFundingConfig(wallet.toObject());
   const vaultDetails = config.vaultDetails;
   const amountMinor = validateFundingAmount(amount, config.minAmountMinor);
   const fundingId = newFundingId();
@@ -603,7 +644,7 @@ export async function createWalletFundingRequest(walletId: string, amount: numbe
 
 export async function syncWalletFunding(walletId: string): Promise<WalletFundingOverviewDto> {
   const wallet = await getWalletOrThrow(walletId);
-  const vault = deriveVaultForWallet({ walletId });
+  const vault = deriveVaultForWallet({ walletId, walletAddress: wallet.address });
   let recoveredDeposits = 0;
 
   if (!vault) {
@@ -673,14 +714,17 @@ export async function confirmWalletFundingRequest(walletId: string, fundingId: s
   }
 
   if (funding.status === 'confirmed') {
-    throw new ApiError(409, 'FUNDING_ALREADY_CONFIRMED', 'This wallet funding request is already confirmed.');
+    if (funding.proofId === txHash || funding.chainTxHash === txHash) {
+      return getSessionsOverview(walletId);
+    }
+    throw new ApiError(409, 'FUNDING_ALREADY_CONFIRMED', 'This wallet funding request is already confirmed with another proof.');
   }
 
   if (funding.depositMode !== 'vault') {
     throw new ApiError(409, 'MANUAL_FUNDING_DISABLED', 'Only CKB vault deposits can be confirmed in beta.');
   }
 
-  const vault = deriveVaultForWallet({ walletId });
+  const vault = deriveVaultForWallet({ walletId, walletAddress: funding.walletAddress });
   if (!vault || vault.scriptHash !== funding.vaultScriptHash) {
     throw new ApiError(409, 'VAULT_ADDRESS_MISMATCH', 'Funding request vault does not match the connected wallet vault.');
   }

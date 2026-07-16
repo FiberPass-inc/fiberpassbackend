@@ -139,6 +139,14 @@ export async function reserveChargeAttempt(input: ReserveChargeAttemptInput): Pr
           ownerWalletId: input.ownerWalletId,
           status: 'active',
           ...(input.sessionMatch ?? {}),
+          $and: [
+            {
+              $or: [
+                { lifecycleState: 'idle' },
+                { lifecycleState: { $exists: false } }
+              ]
+            }
+          ],
           $or: [
             { singleUse: { $ne: true } },
             {
