@@ -10,8 +10,10 @@ import {
   type AppRecord
 } from '../models/app.model.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
+import { WebhookDeliveryModel } from '../models/webhookDelivery.model.js';
 import { fallbackMinorUnits, fromMinorUnits } from '../lib/money.js';
 import { writeAuditLog } from './audit.service.js';
+import { encryptWebhookSecret, resolveWebhookDestination } from './webhookSecurity.service.js';
 
 export interface CreateDeveloperAppInput {
   name: string;
@@ -33,6 +35,10 @@ export interface AppDto {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ConfiguredAppWebhookDto extends AppDto {
+  signingSecret?: string;
 }
 
 export interface AppApiKeyDto {
@@ -134,7 +140,7 @@ function toAppDto(app: AppRecord & { createdAt?: Date; updatedAt?: Date }): AppD
     category: app.category ?? 'API',
     description: app.description ?? '',
     webhookUrl: app.webhookUrl ?? undefined,
-    webhookConfigured: Boolean(app.webhookUrl && app.webhookSigningSecret),
+    webhookConfigured: Boolean(app.webhookUrl && app.webhookSigningSecretEncrypted),
     status: app.status,
     createdAt: (app.createdAt ?? new Date()).toISOString(),
     updatedAt: (app.updatedAt ?? app.createdAt ?? new Date()).toISOString()
@@ -270,38 +276,48 @@ export async function configureAppWebhook(input: {
   ownerWalletId: string;
   webhookUrl?: string;
   signingSecret?: string;
-}): Promise<AppDto> {
+}): Promise<ConfiguredAppWebhookDto> {
   const app = await getOwnedAppOrThrow(input.appId, input.ownerWalletId);
   const webhookUrl = input.webhookUrl?.trim();
   const signingSecret = input.signingSecret?.trim();
 
   if (!webhookUrl) {
     app.webhookUrl = undefined;
-    app.webhookSigningSecret = undefined;
+    app.webhookSigningSecretEncrypted = undefined;
     app.webhookSecretHash = undefined;
     await app.save();
+    await Promise.all([
+      AppModel.collection.updateOne({ appId: input.appId }, { $unset: { webhookSigningSecret: '' } }),
+      WebhookDeliveryModel.collection.updateMany({ appId: input.appId }, { $unset: { signingSecret: '' } })
+    ]);
     await writeAuditLog({ actorWalletId: input.ownerWalletId, action: 'app.webhook.disabled', targetType: 'app', targetId: input.appId });
     return toAppDto(app.toObject());
   }
 
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(webhookUrl);
-  } catch {
-    throw new ApiError(400, 'INVALID_WEBHOOK_URL', 'Webhook URL must be a valid HTTPS URL.');
+  const destination = await resolveWebhookDestination(webhookUrl);
+  const legacy = await AppModel.collection.findOne<{ webhookSigningSecret?: string }>(
+    { appId: input.appId },
+    { projection: { webhookSigningSecret: 1 } }
+  );
+  let nextSecret = signingSecret || legacy?.webhookSigningSecret;
+  let revealedSecret: string | undefined;
+  if (!nextSecret && !app.webhookSigningSecretEncrypted) {
+    nextSecret = 'fpwhsec_' + randomBytes(32).toString('hex');
+    revealedSecret = nextSecret;
   }
 
-  if (parsedUrl.protocol !== 'https:' && process.env.NODE_ENV === 'production') {
-    throw new ApiError(400, 'INVALID_WEBHOOK_URL', 'Production webhook URLs must use HTTPS.');
+  app.webhookUrl = destination.url.toString();
+  if (nextSecret) {
+    app.webhookSigningSecretEncrypted = encryptWebhookSecret(nextSecret);
+    app.webhookSecretHash = createHash('sha256').update(nextSecret).digest('hex');
   }
-
-  const nextSecret = signingSecret || app.webhookSigningSecret || 'fpwhsec_' + randomBytes(32).toString('hex');
-  app.webhookUrl = webhookUrl;
-  app.webhookSigningSecret = nextSecret;
-  app.webhookSecretHash = createHash('sha256').update(nextSecret).digest('hex');
   await app.save();
-  await writeAuditLog({ actorWalletId: input.ownerWalletId, action: 'app.webhook.configured', targetType: 'app', targetId: input.appId, metadata: { webhookUrl } });
-  return toAppDto(app.toObject());
+  await Promise.all([
+    AppModel.collection.updateOne({ appId: input.appId }, { $unset: { webhookSigningSecret: '' } }),
+    WebhookDeliveryModel.collection.updateMany({ appId: input.appId }, { $unset: { signingSecret: '' } })
+  ]);
+  await writeAuditLog({ actorWalletId: input.ownerWalletId, action: 'app.webhook.configured', targetType: 'app', targetId: input.appId, metadata: { webhookUrl: app.webhookUrl } });
+  return { ...toAppDto(app.toObject()), ...(revealedSecret ? { signingSecret: revealedSecret } : {}) };
 }
 
 export async function revokeAppApiKey(appId: string, keyId: string, walletId: string): Promise<AppApiKeyDto> {

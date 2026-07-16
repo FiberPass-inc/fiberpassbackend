@@ -28,7 +28,7 @@ const appSchema = new Schema(
     description: { type: String, trim: true, default: '' },
     webhookUrl: { type: String, trim: true },
     webhookSecretHash: { type: String, trim: true },
-    webhookSigningSecret: { type: String, trim: true },
+    webhookSigningSecretEncrypted: { type: String, trim: true },
     status: { type: String, enum: APP_STATUSES, required: true, default: 'active', index: true }
   },
   {

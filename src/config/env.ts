@@ -69,6 +69,7 @@ const envSchema = z.object({
   WORKER_HEARTBEAT_STALE_MS: z.coerce.number().int().positive().default(30000),
   WORKER_LEASE_TTL_MS: z.coerce.number().int().positive().default(60000),
   WEBHOOK_DELIVERY_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+  WEBHOOK_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
   CRON_SECRET: z.string().optional().default(""),
   AUTOMATION_MAX_INVOICE_CKB: z.coerce.number().positive().default(1000),
   AUTOMATION_MAX_BATCH_CKB: z.coerce.number().positive().default(5000),

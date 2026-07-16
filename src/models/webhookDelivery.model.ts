@@ -12,7 +12,6 @@ const webhookDeliverySchema = new Schema(
     targetType: { type: String, required: true, trim: true },
     targetId: { type: String, required: true, trim: true, index: true },
     url: { type: String, required: true, trim: true },
-    signingSecret: { type: String, required: true, trim: true },
     payload: { type: Schema.Types.Mixed, required: true },
     status: { type: String, enum: WEBHOOK_DELIVERY_STATUSES, required: true, default: 'queued', index: true },
     attempts: { type: Number, required: true, min: 0, default: 0 },

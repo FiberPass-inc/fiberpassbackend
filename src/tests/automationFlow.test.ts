@@ -109,7 +109,9 @@ assert.match(signWebhookPayload('secret', '123', '{"ok":true}'), /^sha256=[a-f0-
 
 assert.ok(AppModel.schema.path('webhookUrl'));
 assert.ok(AppModel.schema.path('webhookSecretHash'));
-assert.ok(AppModel.schema.path('webhookSigningSecret'));
+assert.ok(AppModel.schema.path('webhookSigningSecretEncrypted'));
+assert.equal(AppModel.schema.path('webhookSigningSecret'), undefined);
+assert.equal(WebhookDeliveryModel.schema.path('signingSecret'), undefined);
 
 const webhookIndexes = WebhookDeliveryModel.schema.indexes().map(([fields]) => fields);
 assert.ok(webhookIndexes.some((fields) => Object.prototype.hasOwnProperty.call(fields, 'deliveryId')));

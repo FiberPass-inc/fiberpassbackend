@@ -28,7 +28,6 @@ function webhookRecord(deliveryId: string, status: 'queued' | 'delivering', lock
     targetType: 'invoice',
     targetId: 'invoice-1',
     url: 'https://example.com/webhook',
-    signingSecret: 'test-secret',
     payload: { ok: true },
     status,
     attempts: status === 'delivering' ? 1 : 0,

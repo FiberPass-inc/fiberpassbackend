@@ -10,6 +10,8 @@ See [docs/vault-recovery.md](docs/vault-recovery.md) for JoyID-bound vault owner
 
 See [docs/worker-reliability.md](docs/worker-reliability.md) for the required API/payment/reconciliation/webhook services, durable live events, heartbeats, locks, and delivery guarantees.
 
+See [docs/webhook-security.md](docs/webhook-security.md) for webhook destination restrictions, encrypted secret storage, retry behavior, and the HMAC verification contract.
+
 ## Stack
 
 - Express API
