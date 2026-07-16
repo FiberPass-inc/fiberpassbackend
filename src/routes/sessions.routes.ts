@@ -22,7 +22,9 @@ import {
   revokeSession,
   settleSession,
   togglePauseSession,
-  topUpSession
+  topUpSession,
+  validateRecipientClaimDestination,
+  validateRecipientDestination
 } from '../services/session.service.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
 
@@ -86,6 +88,16 @@ const claimWalletSchema = z.object({
   timeZone: z.string().trim().min(1).max(80).optional()
 }).refine((value) => Boolean(value.address || value.fiberInvoice), 'Add a CKB wallet address or Fiber invoice/payment request.');
 
+const destinationSchema = z.object({
+  address: z.string().trim().max(190).optional().or(z.literal('')).refine((value) => !value || isFiberCkbAddress(value), FIBER_CKB_ADDRESS_ERROR),
+  fiberInvoice: z.string().trim().min(16, 'Enter a full Fiber invoice/payment request; short placeholders cannot be paid.').max(2000).optional().or(z.literal(''))
+}).refine((value) => Boolean(value.address) !== Boolean(value.fiberInvoice), 'Choose either a CKB wallet or Fiber invoice.');
+
+const destinationPolicySchema = destinationSchema.extend({
+  amount: z.coerce.number().positive().max(CREATE_SESSION_POLICY.maxLimit),
+  currency: z.literal(CREATE_SESSION_POLICY.currency).default(CREATE_SESSION_POLICY.currency)
+});
+
 export const sessionsRouter = Router();
 
 sessionsRouter.get('/recipient-claims/:token', asyncHandler(async (request, response) => {
@@ -99,8 +111,27 @@ sessionsRouter.post('/recipient-claims/:token', asyncHandler(async (request, res
   response.json(await claimRecipientWallet(token, { address, fiberInvoice }, timeZone));
 }));
 
+sessionsRouter.post('/recipient-claims/:token/destination-policy', asyncHandler(async (request, response) => {
+  const { token } = claimParamsSchema.parse(request.params);
+  const destination = destinationSchema.parse(request.body ?? {});
+  response.json(await validateRecipientClaimDestination(token, {
+    address: destination.address || undefined,
+    fiberInvoice: destination.fiberInvoice || undefined
+  }));
+}));
+
 sessionsRouter.get('/sessions/create-policy', requireAuth, asyncHandler(async (_request, response) => {
   response.json(getCreateSessionPolicy());
+}));
+
+sessionsRouter.post('/sessions/destination-policy', requireAuth, asyncHandler(async (request, response) => {
+  const payload = destinationPolicySchema.parse(request.body ?? {});
+  response.json(await validateRecipientDestination({
+    amount: payload.amount,
+    currency: payload.currency,
+    address: payload.address || undefined,
+    fiberInvoice: payload.fiberInvoice || undefined
+  }));
 }));
 
 sessionsRouter.get('/sessions', requireAuth, asyncHandler(async (request, response) => {

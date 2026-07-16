@@ -25,13 +25,13 @@ import {
   type ProviderChargeResult
 } from './chargeReservation.service.js';
 import { requireEmailConfigured } from './email.service.js';
-import { fiberAdapter, hashFiberPaymentRequest } from './fiberAdapter.js';
+import { fiberAdapter, hashFiberPaymentRequest, validateFiberInvoiceForPayment } from './fiberAdapter.js';
 import { createFiberExitInvoice, executeFiberExitCkbSettlement } from './fiberExitGateway.service.js';
 import { ensureVaultFundedFiberLiquidity, getCurrentFiberPayoutLiquiditySnapshot } from './fiberLiquidityBridge.service.js';
 import { fiberProvider } from './fiberProvider.js';
 import { sendRecipientInviteEmail, sendRecipientPayoutReceiptEmail } from './recipientEmail.service.js';
 import { deriveVaultForWallet } from './vault.service.js';
-import { executeVaultPayout } from './vaultPayout.service.js';
+import { executeVaultPayout, minimalRecipientCapacityMinor } from './vaultPayout.service.js';
 
 const LEGACY_PLACEHOLDER_BALANCE_MINOR = toMinorUnits('1240.50', 'USDC');
 const HISTORY_STATUSES: SessionStatus[] = ['settled', 'revoked', 'expired'];
@@ -766,6 +766,75 @@ export interface RecipientClaimDto {
   hasFiberInvoice?: boolean;
 }
 
+export interface RecipientDestinationPolicyDto {
+  mode: 'ckb' | 'fiber';
+  amount: number;
+  amountMinor: number;
+  currency: string;
+  minimumAmount: number;
+  minimumAmountMinor: number;
+  invoiceAmountMinor?: number;
+  invoiceCurrency?: string;
+}
+
+export async function validateRecipientDestination(input: {
+  amount: number;
+  currency: string;
+  address?: string;
+  fiberInvoice?: string;
+}): Promise<RecipientDestinationPolicyDto> {
+  const address = cleanOptionalString(input.address);
+  const fiberInvoice = validateFiberPaymentRequest(input.fiberInvoice);
+  if (input.currency.toUpperCase() !== CREATE_SESSION_POLICY.currency) {
+    throw new ApiError(400, 'UNSUPPORTED_CURRENCY', 'Recipient payouts currently support native CKB only.');
+  }
+  const amountMinor = toMinorUnits(String(input.amount), input.currency);
+  if (amountMinor <= 0) {
+    throw new ApiError(400, 'INVALID_RECIPIENT_AMOUNT', 'Recipient payout amount must be greater than zero.');
+  }
+  if (Boolean(address) === Boolean(fiberInvoice)) {
+    throw new ApiError(400, address ? 'RECIPIENT_DESTINATION_CONFLICT' : 'RECIPIENT_DESTINATION_REQUIRED', 'Choose exactly one destination: a CKB wallet or a Fiber invoice.');
+  }
+  if (address) {
+    if (!isFiberCkbAddress(address)) {
+      throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
+    }
+    const minimumAmountMinor = minimalRecipientCapacityMinor(address);
+    if (amountMinor < minimumAmountMinor) {
+      throw new ApiError(400, 'CKB_RECIPIENT_AMOUNT_BELOW_MINIMUM', 'This CKB address requires at least ' + fromMinorUnits(minimumAmountMinor, input.currency).toLocaleString('en-US') + ' ' + input.currency + ' for a valid output cell.', {
+        minimumAmountMinor,
+        minimumAmount: fromMinorUnits(minimumAmountMinor, input.currency)
+      });
+    }
+    return {
+      mode: 'ckb',
+      amount: fromMinorUnits(amountMinor, input.currency),
+      amountMinor,
+      currency: input.currency,
+      minimumAmount: fromMinorUnits(minimumAmountMinor, input.currency),
+      minimumAmountMinor
+    };
+  }
+
+  try {
+    const invoice = await fiberProvider.parseInvoice(fiberInvoice as string);
+    validateFiberInvoiceForPayment({ invoice, amountMinor, currency: input.currency, network: fiberProvider.network });
+    return {
+      mode: 'fiber',
+      amount: fromMinorUnits(amountMinor, input.currency),
+      amountMinor,
+      currency: input.currency,
+      minimumAmount: fromMinorUnits(1, input.currency),
+      minimumAmountMinor: 1,
+      invoiceAmountMinor: invoice.amountMinor ?? undefined,
+      invoiceCurrency: invoice.currency
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(400, 'FIBER_INVOICE_PARSE_FAILED', error instanceof Error ? error.message : 'Fiber invoice could not be parsed.');
+  }
+}
+
 function normalizeTimeZone(value?: string): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.length > 80) return undefined;
@@ -830,12 +899,17 @@ export async function claimRecipientWallet(token: string, input: { address?: str
   if (!address && !fiberInvoice) {
     throw new ApiError(400, 'RECIPIENT_DESTINATION_REQUIRED', 'Add a CKB wallet address or Fiber invoice/payment request before this payout can be released.');
   }
-  if (address && !isFiberCkbAddress(address)) {
-    throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
-  }
   const claim = await findRecipientClaim(token);
   if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
   if (claim.expired) throw new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
+
+  const amountMinor = fallbackMinorUnits(claim.wallet.amountMinor, claim.wallet.amount, claim.session.currency);
+  await validateRecipientDestination({
+    amount: fromMinorUnits(amountMinor, claim.session.currency),
+    currency: claim.session.currency,
+    address,
+    fiberInvoice
+  });
 
   if (address) claim.session.set('recipientWallets.' + claim.index + '.address', address);
   if (fiberInvoice) claim.session.set('recipientWallets.' + claim.index + '.fiberInvoice', fiberInvoice);
@@ -855,6 +929,21 @@ export async function claimRecipientWallet(token: string, input: { address?: str
   const refreshed = await findRecipientClaim(token);
   if (!refreshed) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
   return recipientClaimDto(refreshed);
+}
+
+export async function validateRecipientClaimDestination(
+  token: string,
+  input: { address?: string; fiberInvoice?: string }
+): Promise<RecipientDestinationPolicyDto> {
+  const claim = await findRecipientClaim(token);
+  if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
+  if (claim.expired) throw new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
+  const amountMinor = fallbackMinorUnits(claim.wallet.amountMinor, claim.wallet.amount, claim.session.currency);
+  return validateRecipientDestination({
+    amount: fromMinorUnits(amountMinor, claim.session.currency),
+    currency: claim.session.currency,
+    ...input
+  });
 }
 
 function normalizePaymentPurpose(value?: PaymentPurpose): PaymentPurpose {
@@ -1407,6 +1496,14 @@ export async function createSession(input: CreateSessionInput, walletId: string)
     recipientAddress: input.recipientAddress,
     recipientWallets: input.recipientWallets
   });
+  await Promise.all(normalizedRecipientWallets
+    .filter((wallet) => (wallet.address || wallet.fiberInvoice) && wallet.amountMinor != null)
+    .map((wallet) => validateRecipientDestination({
+      amount: fromMinorUnits(wallet.amountMinor as number, input.currency),
+      currency: input.currency,
+      address: wallet.address,
+      fiberInvoice: wallet.fiberInvoice
+    })));
   const preparedRecipients = prepareRecipientInvites(normalizedRecipientWallets);
   if (preparedRecipients.invites.length > 0) {
     requireEmailConfigured();

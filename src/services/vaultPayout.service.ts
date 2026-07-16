@@ -127,7 +127,7 @@ async function listVaultCells(lock: Script): Promise<Cell[]> {
   }));
 }
 
-function minimalRecipientCapacityMinor(recipientAddress: string): number {
+export function minimalRecipientCapacityMinor(recipientAddress: string): number {
   const lock = parseCkbAddress(recipientAddress);
   const cell = {
     cellOutput: {
