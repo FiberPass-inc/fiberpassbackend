@@ -29,7 +29,7 @@ function parseCorsOrigin(origin: string): boolean | string[] {
 export async function connectDatabase(): Promise<typeof mongoose> {
   if (mongoose.connection.readyState === 1) return mongoose;
   if (!mongoConnectionPromise) {
-    mongoConnectionPromise = mongoose.connect(env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 }).catch((error) => {
+    mongoConnectionPromise = mongoose.connect(env.MONGODB_URI, { autoIndex: false, serverSelectionTimeoutMS: 8000 }).catch((error) => {
       mongoConnectionPromise = undefined;
       logger.error('mongo_connection_failed', {
         error: error instanceof Error ? error.message : error

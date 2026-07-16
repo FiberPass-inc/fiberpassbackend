@@ -6,7 +6,7 @@ const authChallengeSchema = new Schema(
     address: { type: String, trim: true },
     message: { type: String, required: true },
     nonce: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     consumedAt: { type: Date }
   },
   {
@@ -22,7 +22,7 @@ const authSessionSchema = new Schema(
     tokenHash: { type: String, required: true, unique: true, index: true },
     walletId: { type: String, required: true, index: true },
     address: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true }
+    expiresAt: { type: Date, required: true }
   },
   {
     timestamps: true,

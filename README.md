@@ -12,6 +12,8 @@ See [docs/worker-reliability.md](docs/worker-reliability.md) for the required AP
 
 See [docs/webhook-security.md](docs/webhook-security.md) for webhook destination restrictions, encrypted secret storage, retry behavior, and the HMAC verification contract.
 
+See [docs/production-operations.md](docs/production-operations.md) for migrations, release order, incidents, rollback, backup/restore, and key rotation.
+
 ## Stack
 
 - Express API

@@ -27,6 +27,7 @@ Vault funds and signing:
 - `FIBERPASS_VAULT_CELL_DEP_TYPE`
 - `FIBERPASS_OPERATOR_LOCK_HASH`
 - `FIBERPASS_OPERATOR_PRIVATE_KEY`
+- `WEBHOOK_SECRET_ENCRYPTION_KEY`: stable 32-byte hex/base64 key; required before webhook configuration or migration.
 
 Fiber node infrastructure:
 
@@ -37,6 +38,11 @@ Fiber node infrastructure:
 - `FIBER_API_KEY`: gateway token if the node is protected.
 - `FIBER_PEER_ID`: local node peer id reported by `node_info`.
 - `FIBER_TARGET_PEER_IDS`: comma-separated external peer ids used for channel opening and strategy.
+- `FIBER_NODE_CKB_PRIVATE_KEY`: Fiber node funding signer.
+- `FIBER_EXIT_KEYSEND_TARGET_PUBKEY`: destination used for Fiber exit keysend.
+- `FIBER_EXIT_SETTLEMENT_PRIVATE_KEY`: CKB settlement signer for Fiber exits.
+- `FIBER_EXIT_SETTLEMENT_LOCK_HASH`: expected settlement signer lock hash.
+- `FIBER_EXIT_INVOICE_EXPIRY_SECONDS`: bounded exit invoice lifetime.
 
 Email notifications:
 
@@ -56,3 +62,5 @@ In `NODE_ENV=production`, backend config rejects:
 - localhost Fiber RPC URL
 - localhost public app URL
 - missing `CRON_SECRET`
+
+Run `npm run start:migrate` as a one-off release step before starting API or workers. See [production-operations.md](production-operations.md) for backup, rollback, incident, restore, and key-rotation procedures.

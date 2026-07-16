@@ -14,7 +14,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function runLoop(): Promise<void> {
-  await mongoose.connect(env.MONGODB_URI);
+  await mongoose.connect(env.MONGODB_URI, { autoIndex: false });
   await recordWorkerHeartbeat({ workerId, kind: 'reconciliation', startedAt });
   logger.info('reconciliation_worker_started', {
     workerId,

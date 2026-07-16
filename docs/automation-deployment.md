@@ -2,11 +2,12 @@
 
 ## Required Processes
 
-Run the API and both workers for full automation support:
+Run the API and all three workers for full automation support:
 
 ```bash
 npm run start
 npm run start:worker:payments
+npm run start:worker:reconciliation
 npm run start:worker:webhooks
 ```
 
@@ -15,6 +16,7 @@ During local development use:
 ```bash
 npm run dev
 npm run worker:payments
+npm run worker:reconciliation
 npm run worker:webhooks
 ```
 
@@ -39,6 +41,10 @@ Automation workers:
 - `WEBHOOK_WORKER_INTERVAL_MS`
 - `WEBHOOK_WORKER_BATCH_SIZE`
 - `WEBHOOK_DELIVERY_TIMEOUT_MS`
+- `RECONCILIATION_WORKER_INTERVAL_MS`
+- `RECONCILIATION_WORKER_BATCH_SIZE`
+- `WORKER_HEARTBEAT_STALE_MS`
+- `WORKER_LEASE_TTL_MS`
 
 Automation safety limits:
 
@@ -56,7 +62,7 @@ Mongoose declares indexes for:
 - Payment batches by `batchId`, session/status, app/idempotency key, and external reference.
 - Webhook deliveries by `deliveryId`, status/runAfter, app/event, and owner/app.
 
-Before beta, run the backend once against the target database with `autoIndex` enabled or apply equivalent indexes through a migration.
+Run `npm run start:migrate` before each release. Runtime services use `autoIndex: false`; versioned migrations create the required indexes and record completion.
 
 ## Production Safety Checklist
 

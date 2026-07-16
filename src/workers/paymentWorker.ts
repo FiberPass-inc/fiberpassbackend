@@ -14,7 +14,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function runLoop(): Promise<void> {
-  await mongoose.connect(env.MONGODB_URI);
+  await mongoose.connect(env.MONGODB_URI, { autoIndex: false });
   await recordWorkerHeartbeat({ workerId, kind: 'payments', startedAt });
   logger.info('payment_worker_started', { workerId, intervalMs: env.PAYMENT_WORKER_INTERVAL_MS, batchSize: env.PAYMENT_WORKER_BATCH_SIZE });
 

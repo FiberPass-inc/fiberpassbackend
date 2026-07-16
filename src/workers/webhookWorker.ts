@@ -13,7 +13,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function runLoop(): Promise<void> {
-  await mongoose.connect(env.MONGODB_URI);
+  await mongoose.connect(env.MONGODB_URI, { autoIndex: false });
   await recordWorkerHeartbeat({ workerId, kind: 'webhooks', startedAt });
   logger.info('webhook_worker_started', { workerId, intervalMs: env.WEBHOOK_WORKER_INTERVAL_MS, batchSize: env.WEBHOOK_WORKER_BATCH_SIZE });
 
