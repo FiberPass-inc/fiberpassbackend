@@ -4,6 +4,7 @@ import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { InvoiceModel, PaymentJobModel } from '../models/automation.model.js';
 import { SessionModel, type SessionRecord, type SessionStatus } from '../models/session.model.js';
 import { WalletModel } from '../models/wallet.model.js';
+import { WebhookDeliveryModel } from '../models/webhookDelivery.model.js';
 import { writeAuditLog } from './audit.service.js';
 import { releaseChargeReservation } from './chargeReservation.service.js';
 import { CREATE_SESSION_POLICY, reconcileWalletBalanceWithCurrentVault } from './session.service.js';
@@ -12,6 +13,7 @@ export interface ReconciliationWorkerOptions {
   limit?: number;
   staleAttemptMs?: number;
   staleJobMs?: number;
+  staleWebhookMs?: number;
   workerId?: string;
 }
 
@@ -22,11 +24,14 @@ export interface ReconciliationWorkerResult {
   attemptsReleased: number;
   jobsRequeued: number;
   invoicesRequeued: number;
+  webhooksRequeued: number;
+  webhooksFailed: number;
 }
 
 const OPEN_STATUSES: SessionStatus[] = ['active', 'paused'];
 const DEFAULT_STALE_ATTEMPT_MS = 10 * 60 * 1000;
 const DEFAULT_STALE_JOB_MS = 10 * 60 * 1000;
+const DEFAULT_STALE_WEBHOOK_MS = 2 * 60 * 1000;
 
 function sessionSpentMinor(session: { spent?: number | null; spentMinor?: number | null; currency?: string | null }): number {
   return fallbackMinorUnits(session.spentMinor, session.spent, session.currency ?? CREATE_SESSION_POLICY.currency);
@@ -148,6 +153,46 @@ async function requeueStalePaymentJobs(staleBefore: Date, limit: number): Promis
   return { jobsRequeued, invoicesRequeued };
 }
 
+async function recoverStaleWebhookDeliveries(staleBefore: Date, limit: number): Promise<{ webhooksRequeued: number; webhooksFailed: number }> {
+  const candidates = await WebhookDeliveryModel.find({ status: 'delivering', lockedAt: { $lte: staleBefore } })
+    .select('_id deliveryId ownerWalletId attempts maxAttempts')
+    .sort({ lockedAt: 1 })
+    .limit(limit)
+    .lean<Array<{ _id: unknown; deliveryId: string; ownerWalletId: string; attempts: number; maxAttempts: number }>>();
+  let webhooksRequeued = 0;
+  let webhooksFailed = 0;
+
+  for (const candidate of candidates) {
+    const failed = candidate.attempts >= candidate.maxAttempts;
+    const now = new Date();
+    const recovered = await WebhookDeliveryModel.findOneAndUpdate(
+      { _id: candidate._id, status: 'delivering', lockedAt: { $lte: staleBefore } },
+      {
+        $set: {
+          status: failed ? 'failed' : 'retrying',
+          runAfter: now,
+          lastFailureCode: 'STALE_WEBHOOK_LOCK',
+          lastFailureMessage: 'Webhook worker lock expired before delivery completed.',
+          ...(failed ? { failedAt: now } : {})
+        },
+        $unset: { lockedAt: 1, lockedBy: 1 }
+      },
+      { new: true }
+    ).lean();
+    if (!recovered) continue;
+    if (failed) webhooksFailed += 1;
+    else webhooksRequeued += 1;
+    await writeAuditLog({
+      actorWalletId: candidate.ownerWalletId,
+      action: failed ? 'reconciliation.webhook_failed' : 'reconciliation.webhook_requeued',
+      targetType: 'webhook_delivery',
+      targetId: candidate.deliveryId,
+      metadata: { attempts: candidate.attempts, maxAttempts: candidate.maxAttempts }
+    });
+  }
+  return { webhooksRequeued, webhooksFailed };
+}
+
 async function reconcileWallets(limit: number): Promise<{ checkedWallets: number; walletsReconciled: number }> {
   const wallets = await WalletModel.find({}).select('walletId').sort({ updatedAt: -1 }).limit(limit).lean<Array<{ walletId: string }>>();
   let walletsReconciled = 0;
@@ -162,10 +207,12 @@ export async function runReconciliationWorkerOnce(options: ReconciliationWorkerO
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 25)));
   const staleAttemptMs = Math.max(60_000, options.staleAttemptMs ?? DEFAULT_STALE_ATTEMPT_MS);
   const staleJobMs = Math.max(60_000, options.staleJobMs ?? DEFAULT_STALE_JOB_MS);
-  const [sessionsExpired, attemptsReleased, jobResult, walletResult] = await Promise.all([
+  const staleWebhookMs = Math.max(30_000, options.staleWebhookMs ?? DEFAULT_STALE_WEBHOOK_MS);
+  const [sessionsExpired, attemptsReleased, jobResult, webhookResult, walletResult] = await Promise.all([
     expireDueSessions(limit),
     releaseStaleChargeAttempts(new Date(Date.now() - staleAttemptMs), limit),
     requeueStalePaymentJobs(new Date(Date.now() - staleJobMs), limit),
+    recoverStaleWebhookDeliveries(new Date(Date.now() - staleWebhookMs), limit),
     reconcileWallets(limit)
   ]);
 
@@ -175,7 +222,9 @@ export async function runReconciliationWorkerOnce(options: ReconciliationWorkerO
     sessionsExpired,
     attemptsReleased,
     jobsRequeued: jobResult.jobsRequeued,
-    invoicesRequeued: jobResult.invoicesRequeued
+    invoicesRequeued: jobResult.invoicesRequeued,
+    webhooksRequeued: webhookResult.webhooksRequeued,
+    webhooksFailed: webhookResult.webhooksFailed
   };
 }
 

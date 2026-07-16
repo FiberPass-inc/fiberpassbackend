@@ -8,6 +8,8 @@ See [docs/system-design.md](docs/system-design.md) for the full FiberPass archit
 
 See [docs/vault-recovery.md](docs/vault-recovery.md) for JoyID-bound vault ownership, owner-signed reclaim handoff, legacy synthetic-vault migration, and lifecycle transaction guarantees.
 
+See [docs/worker-reliability.md](docs/worker-reliability.md) for the required API/payment/reconciliation/webhook services, durable live events, heartbeats, locks, and delivery guarantees.
+
 ## Stack
 
 - Express API

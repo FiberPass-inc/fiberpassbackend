@@ -17,6 +17,7 @@ import { runPaymentWorkerOnce } from './services/automation.service.js';
 import { runReconciliationWorkerOnce } from './services/reconciliation.service.js';
 import { runDueSessionPayouts, runScheduledLiquidityPreparation } from './services/session.service.js';
 import { runWebhookWorkerOnce } from './services/webhook.service.js';
+import { getWorkerReadiness } from './services/workerRuntime.service.js';
 
 let mongoConnectionPromise: Promise<typeof mongoose> | undefined;
 
@@ -100,6 +101,16 @@ app.get('/health', async (_request, response) => {
     mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     at: new Date().toISOString()
   });
+});
+
+app.get('/health/workers', async (_request, response) => {
+  try {
+    await connectDatabase();
+    const readiness = await getWorkerReadiness(env.WORKER_HEARTBEAT_STALE_MS);
+    response.status(readiness.ready ? 200 : 503).json(readiness);
+  } catch {
+    response.status(503).json({ ready: false, workers: [], error: 'WORKER_READINESS_UNAVAILABLE' });
+  }
 });
 
 app.use(async (_request, _response, next) => {

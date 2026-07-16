@@ -101,7 +101,7 @@ export async function enqueueWebhookEvent(input: {
   });
 }
 
-async function lockNextWebhookDelivery(workerId: string): Promise<WebhookDocument | null> {
+export async function claimNextWebhookDelivery(workerId: string): Promise<WebhookDocument | null> {
   const now = new Date();
   return WebhookDeliveryModel.findOneAndUpdate(
     { status: { $in: ['queued', 'retrying'] }, runAfter: { $lte: now } },
@@ -172,7 +172,7 @@ export async function runWebhookWorkerOnce(options: { workerId?: string; limit?:
   const result: WebhookWorkerRunResult = { processed: 0, succeeded: 0, failed: 0, retried: 0 };
 
   for (let index = 0; index < limit; index += 1) {
-    const delivery = await lockNextWebhookDelivery(workerId);
+    const delivery = await claimNextWebhookDelivery(workerId);
     if (!delivery) break;
 
     const outcome = await deliverWebhook(delivery);

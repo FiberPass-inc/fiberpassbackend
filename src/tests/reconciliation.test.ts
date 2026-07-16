@@ -8,7 +8,9 @@ const result = assertReconciliationResult({
   sessionsExpired: 0,
   attemptsReleased: 0,
   jobsRequeued: 0,
-  invoicesRequeued: 0
+  invoicesRequeued: 0,
+  webhooksRequeued: 0,
+  webhooksFailed: 0
 });
 assert.equal(result.walletsReconciled, 1);
 assert.throws(
@@ -18,7 +20,9 @@ assert.throws(
     sessionsExpired: 0,
     attemptsReleased: 0,
     jobsRequeued: 0,
-    invoicesRequeued: 0
+    invoicesRequeued: 0,
+    webhooksRequeued: 0,
+    webhooksFailed: 0
   }),
   (error: unknown) => error instanceof ApiError && error.code === 'RECONCILIATION_INVALID_RESULT'
 );
