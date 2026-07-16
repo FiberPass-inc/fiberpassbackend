@@ -6,6 +6,8 @@ Node.js + TypeScript API for prepaid, revocable Fiber payment sessions.
 
 See [docs/system-design.md](docs/system-design.md) for the full FiberPass architecture, user flow, developer flow, vault-to-Fiber liquidity design, and payment execution diagram.
 
+See [docs/vault-recovery.md](docs/vault-recovery.md) for JoyID-bound vault ownership, owner-signed reclaim handoff, legacy synthetic-vault migration, and lifecycle transaction guarantees.
+
 ## Stack
 
 - Express API
@@ -65,6 +67,7 @@ All product endpoints are available at their current paths and under `/v1` alias
 - `GET /auth/me`
 - `POST /auth/logout`
 - `GET /wallet/funding`
+- `GET /wallet/vault-recovery`
 - `POST /wallet/funding`
 - `POST /wallet/funding/sync`
 - `POST /wallet/funding/:fundingId/confirm`

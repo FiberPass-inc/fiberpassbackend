@@ -22,7 +22,7 @@ import {
   type CkbLiveCell,
   type CkbLockActivity
 } from './ckbChain.service.js';
-import { deriveLegacyVaultForWallet, deriveVaultForWallet, getVaultRuntimeConfig, minimalVaultCellCapacityShannons, type DerivedVaultDto } from './vault.service.js';
+import { buildVaultOwnerReclaimHandoff, deriveLegacyVaultForWallet, deriveVaultForWallet, getVaultRuntimeConfig, minimalVaultCellCapacityShannons, type DerivedVaultDto, type VaultOwnerReclaimHandoffDto } from './vault.service.js';
 
 const FUNDING_CURRENCY = 'CKB';
 const MIN_FUNDING_MINOR = toMinorUnits('138', FUNDING_CURRENCY);
@@ -132,6 +132,16 @@ export interface WalletFundingOverviewDto {
   chain: WalletChainStateDto;
   activities: WalletChainActivityDto[];
   recoveredDeposits?: number;
+}
+
+export interface WalletVaultRecoveryDto {
+  current: VaultOwnerReclaimHandoffDto;
+  legacy?: {
+    address: string;
+    scriptHash: string;
+    mode: 'operator-migration-required';
+    destinationAddress: string;
+  };
 }
 
 function newFundingId(): string {
@@ -255,7 +265,7 @@ async function usedVaultOutPoints(): Promise<Set<string>> {
   return new Set(records.map((record) => record.chainOutPoint).filter((value): value is string => Boolean(value)));
 }
 
-async function applyConfirmedFunding(input: {
+export async function applyConfirmedFunding(input: {
   walletId: string;
   funding: WalletFundingDocument | null;
   deposit: CkbDepositOutput;
@@ -601,6 +611,26 @@ async function createRecoveredFundingRecord(input: { wallet: WalletRecord; vault
 
 export async function listWalletFunding(walletId: string): Promise<WalletFundingOverviewDto> {
   return buildFundingOverview(walletId);
+}
+
+export async function getWalletVaultRecovery(walletId: string): Promise<WalletVaultRecoveryDto> {
+  const wallet = await getWalletOrThrow(walletId);
+  const current = buildVaultOwnerReclaimHandoff({ walletId, walletAddress: wallet.address });
+  if (!current) {
+    throw new ApiError(503, 'USER_VAULT_NOT_CONFIGURED', 'This wallet does not have a configured FiberPass vault.');
+  }
+  const legacy = deriveLegacyVaultForWallet(walletId);
+  return {
+    current,
+    legacy: legacy && legacy.scriptHash !== current.vaultScriptHash
+      ? {
+          address: legacy.address,
+          scriptHash: legacy.scriptHash,
+          mode: 'operator-migration-required',
+          destinationAddress: current.vaultAddress
+        }
+      : undefined
+  };
 }
 
 export async function createWalletFundingRequest(walletId: string, amount: number): Promise<WalletFundingRequestDto> {
