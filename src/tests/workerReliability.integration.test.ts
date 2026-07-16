@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
+import { AppModel } from '../models/app.model.js';
+import { AuditLogModel } from '../models/auditLog.model.js';
 import { DomainEventModel } from '../models/domainEvent.model.js';
 import { WebhookDeliveryModel } from '../models/webhookDelivery.model.js';
 import { WorkerHeartbeatModel } from '../models/workerHeartbeat.model.js';
 import { WorkerLeaseModel } from '../models/workerLease.model.js';
 import { liveEvents } from '../lib/liveEvents.js';
 import { runReconciliationWorkerOnce } from '../services/reconciliation.service.js';
-import { claimNextWebhookDelivery } from '../services/webhook.service.js';
+import { claimNextWebhookDelivery, enqueueWebhookEvent } from '../services/webhook.service.js';
+import { encryptWebhookSecret } from '../services/webhookSecurity.service.js';
 import { acquireWorkerLease, getWorkerReadiness, recordWorkerHeartbeat, releaseWorkerLease } from '../services/workerRuntime.service.js';
 
 const uri = process.env.WORKER_TEST_MONGODB_URI;
@@ -41,6 +44,8 @@ function webhookRecord(deliveryId: string, status: 'queued' | 'delivering', lock
 try {
   await Promise.all([
     DomainEventModel.syncIndexes(),
+    AppModel.syncIndexes(),
+    AuditLogModel.syncIndexes(),
     WebhookDeliveryModel.syncIndexes(),
     WorkerHeartbeatModel.syncIndexes(),
     WorkerLeaseModel.syncIndexes()
@@ -51,6 +56,29 @@ try {
   await DomainEventModel.create({ eventName, payload: { version: 2 }, expiresAt: new Date(Date.now() + 60_000) });
   const replay = await liveEvents.readAfter(eventName, first._id.toString());
   assert.deepEqual(replay.map((event) => event.payload), [{ version: 2 }]);
+
+  await AppModel.create({
+    appId: 'worker-app',
+    ownerWalletId: 'worker-owner',
+    name: 'Webhook integration app',
+    serviceAddress: 'ckt1-worker',
+    webhookUrl: 'https://example.com/webhook',
+    webhookSecretHash: 'test-hash',
+    webhookSigningSecretEncrypted: encryptWebhookSecret('worker-secret', '11'.repeat(32)),
+    status: 'active'
+  });
+  await enqueueWebhookEvent({
+    ownerWalletId: 'worker-owner',
+    appId: 'worker-app',
+    eventType: 'integration.enqueued',
+    targetType: 'invoice',
+    targetId: 'invoice-enqueued',
+    payload: { ok: true }
+  });
+  const enqueuedRaw = await WebhookDeliveryModel.collection.findOne({ eventType: 'integration.enqueued' });
+  assert.ok(enqueuedRaw);
+  assert.equal(Object.prototype.hasOwnProperty.call(enqueuedRaw, 'signingSecret'), false);
+  await WebhookDeliveryModel.updateOne({ eventType: 'integration.enqueued' }, { $set: { status: 'succeeded' } });
 
   const leaseResults = await Promise.all(
     Array.from({ length: 20 }, (_, index) => acquireWorkerLease({
@@ -78,6 +106,7 @@ try {
   ]);
   assert.equal(recovery.reduce((total, result) => total + result.webhooksRequeued, 0), 1);
   assert.equal((await WebhookDeliveryModel.findOne({ deliveryId: 'delivery-stale' }).lean())?.status, 'retrying');
+  assert.equal(await AuditLogModel.countDocuments({ action: 'reconciliation.webhook_requeued', targetId: 'delivery-stale' }), 1);
 
   await Promise.all([
     recordWorkerHeartbeat({ workerId: 'payments-1', kind: 'payments', success: true }),
