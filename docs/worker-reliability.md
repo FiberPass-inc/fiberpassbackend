@@ -13,7 +13,7 @@ The files in `deploy/railway/` are service-specific Railway configs. Point each 
 
 ## Supervision and readiness
 
-Each worker writes a Mongo heartbeat after every bounded batch and records its latest counters. `GET /health/workers` returns HTTP 503 unless payments, reconciliation, and webhooks each have a fresh non-stopping instance. Set `WORKER_HEARTBEAT_STALE_MS` above the longest normal batch duration and below the alerting threshold.
+Each worker writes a Mongo heartbeat after every bounded batch and records its latest counters. `GET /health/ready` and `GET /health/workers` return HTTP 503 unless payments, reconciliation, and webhooks each have a fresh non-stopping instance. `GET /health/live` only proves the API process is alive. Set `WORKER_HEARTBEAT_STALE_MS` above the longest normal batch duration and below the alerting threshold.
 
 Workers handle `SIGINT` and `SIGTERM`, finish the current bounded batch, record `stopping`, and disconnect Mongo. The platform restart policy handles unexpected exits.
 
@@ -29,4 +29,4 @@ Workers handle `SIGINT` and `SIGTERM`, finish the current bounded batch, record 
 
 Mongo state transitions, balance reservations, and idempotency keys provide exactly-once ledger effects. External Fiber payments and webhook HTTP requests are at-least-once operations around a persisted outcome: clients must use the provided payment idempotency key, and webhook consumers must deduplicate `x-fiberpass-delivery`.
 
-Live overview updates are stored in Mongo for seven days. SSE clients reconnect with `Last-Event-ID` or `?cursor=` and the API replays later events, including events produced by another process. Clients should still poll `GET /sessions` at a low frequency when streaming is unavailable.
+Live overview updates are stored in Mongo for seven days. Clients create a short-lived credential with `POST /events/ticket`, open `GET /events?ticket=...`, and reconnect with `Last-Event-ID` or `?cursor=`; long-lived bearer tokens never enter event URLs. The API replays later events, including events produced by another process. Clients should still poll side-effect-free `GET /sessions` at a low frequency when streaming is unavailable.

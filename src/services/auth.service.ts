@@ -6,6 +6,7 @@ import { ApiError } from '../lib/errors.js';
 import { fallbackMinorUnits, fromMinorUnits } from '../lib/money.js';
 import { AppApiKeyModel, AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
+import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
@@ -38,6 +39,11 @@ export interface AuthVerifyDto {
   token: string;
   expiresAt: string;
   wallet: WalletDto;
+}
+
+export interface StreamTicketDto {
+  ticket: string;
+  expiresAt: string;
 }
 
 function networkConfig() {
@@ -367,9 +373,33 @@ export async function getAuthContextFromToken(token: string): Promise<AuthContex
   };
 }
 
+export async function createStreamTicket(auth: AuthContext): Promise<StreamTicketDto> {
+  const ticket = randomBytes(24).toString('hex');
+  const expiresAt = new Date(Date.now() + env.STREAM_TICKET_TTL_SECONDS * 1000);
+  await StreamTicketModel.create({
+    tokenHash: tokenHash(ticket),
+    walletId: auth.walletId,
+    address: auth.address,
+    expiresAt
+  });
+  return { ticket, expiresAt: expiresAt.toISOString() };
+}
+
+export async function getAuthContextFromStreamTicket(ticket: string): Promise<AuthContext> {
+  const record = await StreamTicketModel.findOne({
+    tokenHash: tokenHash(ticket),
+    expiresAt: { $gt: new Date() }
+  }).lean();
+  if (!record) {
+    throw new ApiError(401, 'STREAM_TICKET_INVALID', 'Live-update ticket is invalid or expired.');
+  }
+  return { walletId: record.walletId, address: record.address };
+}
+
 export async function revokeAuthToken(token: string): Promise<void> {
   const session = await AuthSessionModel.findOneAndDelete({ tokenHash: tokenHash(token) });
   if (session) {
+    await StreamTicketModel.deleteMany({ walletId: session.walletId });
     await writeAuditLog({
       actorWalletId: session.walletId,
       actorAddress: session.address,

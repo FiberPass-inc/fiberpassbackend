@@ -68,9 +68,13 @@ export const app = express();
 if (env.TRUST_PROXY) app.set('trust proxy', 1);
 app.use(requestContext);
 app.use(securityHeaders);
-app.use(createRateLimitMiddleware({ windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_GLOBAL_MAX, keyPrefix: 'global' }));
-app.use(cors({ origin: parseCorsOrigin(env.FRONTEND_ORIGIN), methods: ['GET', 'POST', 'OPTIONS'] }));
+app.use(cors({
+  origin: parseCorsOrigin(env.FRONTEND_ORIGIN),
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'Last-Event-ID']
+}));
 app.use(express.json({ limit: env.REQUEST_BODY_LIMIT }));
+
 function sendMeta(_request: Request, response: Response): void {
   response.json({
     service: 'fiberpass-api',
@@ -83,25 +87,38 @@ function sendMeta(_request: Request, response: Response): void {
   });
 }
 
-app.get('/meta', sendMeta);
-app.get('/v1/meta', sendMeta);
-app.use(fiberRouter);
-app.use('/v1', fiberRouter);
-
-app.get('/health', async (_request, response) => {
+async function sendReadiness(_request: Request, response: Response): Promise<void> {
   try {
     await connectDatabase();
+    const workers = await getWorkerReadiness(env.WORKER_HEARTBEAT_STALE_MS);
+    const mongoReady = mongoose.connection.readyState === 1;
+    const readiness = buildApiReadiness(mongoReady, workers);
+    response.status(readiness.ready ? 200 : 503).json(readiness);
   } catch {
-    // Health should report DB state without hiding API reachability.
+    response.status(503).json(buildApiReadiness(false, { ready: false, workers: [] }));
   }
+}
 
-  response.json({
-    ok: true,
+export function buildApiReadiness(
+  mongoReady: boolean,
+  workers: { ready: boolean; workers: unknown[]; staleAfterMs?: number }
+) {
+  return {
+    ready: mongoReady && workers.ready,
     service: 'fiberpass-api',
-    mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    dependencies: {
+      mongo: mongoReady ? 'ready' : 'unavailable',
+      workers
+    },
     at: new Date().toISOString()
-  });
+  };
+}
+
+app.get('/health/live', (_request, response) => {
+  response.json({ alive: true, service: 'fiberpass-api', at: new Date().toISOString() });
 });
+app.get('/health/ready', sendReadiness);
+app.get('/health', sendReadiness);
 
 app.get('/health/workers', async (_request, response) => {
   try {
@@ -113,6 +130,13 @@ app.get('/health/workers', async (_request, response) => {
   }
 });
 
+app.get('/cron/payment-worker', (_request, response) => {
+  response
+    .status(405)
+    .setHeader('Allow', 'POST')
+    .json({ error: { code: 'METHOD_NOT_ALLOWED', message: 'Use POST to run the payment worker command.' } });
+});
+
 app.use(async (_request, _response, next) => {
   try {
     await connectDatabase();
@@ -122,17 +146,12 @@ app.use(async (_request, _response, next) => {
   }
 });
 
-app.get('/cron/payment-worker', async (request, response, next) => {
-  try {
-    if (!verifyCronRequest(request)) {
-      response.status(401).json({ error: { code: 'CRON_UNAUTHORIZED', message: 'Invalid cron authorization.' } });
-      return;
-    }
-    response.json(await runPaymentCron());
-  } catch (error) {
-    next(error);
-  }
-});
+app.use(createRateLimitMiddleware({ windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_GLOBAL_MAX, keyPrefix: 'global' }));
+
+app.get('/meta', sendMeta);
+app.get('/v1/meta', sendMeta);
+app.use(fiberRouter);
+app.use('/v1', fiberRouter);
 
 app.post('/cron/payment-worker', async (request, response, next) => {
   try {

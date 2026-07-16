@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import mongoose from 'mongoose';
+import request from 'supertest';
 import { AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from '../models/automation.model.js';
+import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
+import { StreamTicketModel } from '../models/streamTicket.model.js';
 
 const uri = process.env.PLATFORM_TEST_MONGODB_URI;
 if (!uri) throw new Error('PLATFORM_TEST_MONGODB_URI is required for platform integration tests.');
@@ -12,8 +16,9 @@ if (!uri) throw new Error('PLATFORM_TEST_MONGODB_URI is required for platform in
 process.env.FIBERPASS_VAULT_CODE_HASH = '';
 process.env.FIBERPASS_OPERATOR_LOCK_HASH = '';
 
-const { createAuthChallenge, getAuthContextFromToken, revokeAuthToken } = await import('../services/auth.service.js');
+const { createAuthChallenge, createStreamTicket, getAuthContextFromStreamTicket, getAuthContextFromToken, revokeAuthToken } = await import('../services/auth.service.js');
 const { createInvoice, createRecipient, runPaymentWorkerOnce } = await import('../services/automation.service.js');
+const { createRateLimitMiddleware } = await import('../middleware/rateLimit.middleware.js');
 
 const dbName = 'fiberpass_platform_' + randomUUID().replace(/-/g, '');
 await mongoose.connect(uri, { dbName, serverSelectionTimeoutMS: 10_000 });
@@ -32,7 +37,9 @@ try {
     InvoiceModel.syncIndexes(),
     PaymentJobModel.syncIndexes(),
     PaymentBatchModel.syncIndexes(),
-    SessionModel.syncIndexes()
+    RateLimitBucketModel.syncIndexes(),
+    SessionModel.syncIndexes(),
+    StreamTicketModel.syncIndexes()
   ]);
 
   const challenges = await Promise.all(Array.from({ length: 10 }, () => createAuthChallenge(walletAddress)));
@@ -46,12 +53,42 @@ try {
     address: walletAddress,
     expiresAt: new Date(Date.now() + 60_000)
   });
-  assert.deepEqual(await getAuthContextFromToken(token), { walletId, address: walletAddress });
+  const authContext = await getAuthContextFromToken(token);
+  assert.deepEqual(authContext, { walletId, address: walletAddress });
+  const expiredTicket = await createStreamTicket(authContext);
+  assert.deepEqual(await getAuthContextFromStreamTicket(expiredTicket.ticket), authContext);
+  await StreamTicketModel.updateOne(
+    { tokenHash: createHash('sha256').update(expiredTicket.ticket).digest('hex') },
+    { $set: { expiresAt: new Date(0) } }
+  );
+  await assert.rejects(
+    () => getAuthContextFromStreamTicket(expiredTicket.ticket),
+    (error: unknown) => (error as { code?: string }).code === 'STREAM_TICKET_INVALID'
+  );
+  await createStreamTicket(authContext);
   await revokeAuthToken(token);
+  assert.equal(await StreamTicketModel.countDocuments({ walletId }), 0);
   await assert.rejects(
     () => getAuthContextFromToken(token),
     (error: unknown) => (error as { code?: string }).code === 'AUTH_SESSION_INVALID'
   );
+
+  const rateApp = express();
+  rateApp.use(createRateLimitMiddleware({
+    windowMs: 60_000,
+    max: 3,
+    keyPrefix: 'platform-shared',
+    store: 'mongo',
+    keyGenerator: () => 'same-client'
+  }));
+  rateApp.get('/limited', (_request, response) => response.json({ ok: true }));
+  rateApp.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+    const apiError = error as { statusCode?: number; code?: string };
+    response.status(apiError.statusCode ?? 500).json({ error: { code: apiError.code ?? 'ERROR' } });
+  });
+  const rateResponses = await Promise.all(Array.from({ length: 6 }, () => request(rateApp).get('/limited')));
+  assert.equal(rateResponses.filter((response) => response.status === 200).length, 3);
+  assert.equal(rateResponses.filter((response) => response.status === 429).length, 3);
 
   await AppModel.create({
     appId,

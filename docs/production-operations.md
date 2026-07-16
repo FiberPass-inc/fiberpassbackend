@@ -6,7 +6,7 @@
 2. Take an on-demand Mongo snapshot and record the snapshot identifier.
 3. Run `npm run start:migrate` once as a release job. Migrations are versioned and recorded in the `migrations` collection; API and workers run with `autoIndex: false`.
 4. Deploy the API, then payments, reconciliation, and webhooks.
-5. Require `/health`, worker readiness, a test authentication challenge, and a no-value testnet workflow to pass before increasing traffic.
+5. Require `/health/live` and `/health/ready`, a test authentication challenge, and a no-value testnet workflow to pass before increasing traffic. Point the platform readiness probe at `/health/ready`.
 6. Watch error rate, pending/uncertain charge counts, stale locks, and worker heartbeat age through the first full worker interval.
 
 Do not run multiple migration jobs concurrently. A migration in `applying` state must be investigated before another deploy.

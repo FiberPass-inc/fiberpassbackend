@@ -31,15 +31,27 @@ function requireFiberOperator(request: Request, _response: Response, next: NextF
   next();
 }
 
-fiberRouter.get('/fiber/node/status', asyncHandler(async (_request, response) => {
+export function publicFiberReadiness(readiness: Awaited<ReturnType<typeof getFiberNodeReadiness>>) {
+  return {
+    configured: readiness.configured,
+    reachable: readiness.reachable,
+    provider: readiness.provider,
+    network: readiness.network,
+    checkedAt: readiness.checkedAt,
+    readiness: readiness.readiness,
+    paymentExecution: readiness.paymentExecution
+  };
+}
+
+fiberRouter.get('/fiber/node/status', requireFiberOperator, asyncHandler(async (_request, response) => {
   response.json(await getFiberNodeReadiness());
 }));
 
 fiberRouter.get('/fiber/node/readiness', asyncHandler(async (_request, response) => {
-  response.json(await getFiberNodeReadiness());
+  response.json(publicFiberReadiness(await getFiberNodeReadiness()));
 }));
 
-fiberRouter.get('/fiber/channels/strategy', asyncHandler(async (_request, response) => {
+fiberRouter.get('/fiber/channels/strategy', requireFiberOperator, asyncHandler(async (_request, response) => {
   response.json(await getFiberChannelStrategy());
 }));
 

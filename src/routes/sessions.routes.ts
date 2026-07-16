@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { liveEvents } from '../lib/liveEvents.js';
-import { requireAuth } from '../middleware/auth.middleware.js';
+import { requireAuth, requireStreamTicket } from '../middleware/auth.middleware.js';
 import { SESSION_APP_PERMISSIONS } from '../models/session.model.js';
 import {
   CREATE_SESSION_POLICY,
@@ -26,6 +26,7 @@ import {
   validateRecipientClaimDestination,
   validateRecipientDestination
 } from '../services/session.service.js';
+import { createStreamTicket } from '../services/auth.service.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
 
 const recipientWalletSchema = z.object({
@@ -136,8 +137,6 @@ sessionsRouter.post('/sessions/destination-policy', requireAuth, asyncHandler(as
 
 sessionsRouter.get('/sessions', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
-  await runScheduledLiquidityPreparation({ ownerWalletId: walletId, limit: 5 }).catch(() => undefined);
-  await runDueSessionPayouts({ ownerWalletId: walletId, limit: 5 }).catch(() => undefined);
   response.json(await getSessionsOverview(walletId));
 }));
 
@@ -203,7 +202,11 @@ sessionsRouter.post('/sessions/:id/close', requireAuth, asyncHandler(async (requ
 }));
 
 
-sessionsRouter.get('/events', requireAuth, asyncHandler(async (request, response) => {
+sessionsRouter.post('/events/ticket', requireAuth, asyncHandler(async (request, response) => {
+  response.status(201).json(await createStreamTicket((request as AuthenticatedRequest).auth));
+}));
+
+sessionsRouter.get('/events', requireStreamTicket, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   const requestedCursor = request.get('Last-Event-ID') ?? (typeof request.query.cursor === 'string' ? request.query.cursor : undefined);
 

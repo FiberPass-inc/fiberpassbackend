@@ -5,6 +5,7 @@ FiberPass uses server-side limits at the API and money-movement layers. Frontend
 ## Charge API Guardrails
 
 - App charge calls are rate-limited by `RATE_LIMIT_APP_CHARGE_MAX` inside `RATE_LIMIT_WINDOW_MS`.
+- Production rate limits use atomic Mongo fixed-window buckets when `RATE_LIMIT_STORE=mongo`, so every API replica observes the same count. Store failures reject requests with HTTP 503.
 - Every app charge requires an idempotency key so retries cannot double-charge a pass.
 - Charges are blocked when the pass is paused, revoked, closed, expired, settled, or over its remaining limit.
 - Charges are blocked when the service app id or service address does not match the pass authorization.
@@ -15,6 +16,7 @@ FiberPass uses server-side limits at the API and money-movement layers. Frontend
 
 - Keep `FIBER_API_KEY`, `CRON_SECRET`, `FIBERPASS_OPERATOR_PRIVATE_KEY`, SMTP passwords, and MongoDB credentials server-side only.
 - Never expose Fiber RPC credentials, vault signer keys, or cron/operator secrets to frontend env.
+- Bearer session tokens are accepted only through the `Authorization` header. Event streams use a separate short-lived ticket from `POST /events/ticket`.
 - Rotate secrets after demos, public recordings, screenshots, or accidental sharing.
 
 ## Operator Endpoints
@@ -23,5 +25,7 @@ The following endpoints require `Authorization: Bearer <CRON_SECRET>`:
 
 - `POST /fiber/channels/test-open`
 - `POST /fiber/live-e2e`
+- `GET /fiber/node/status`
+- `GET /fiber/channels/strategy`
 
-These are intentionally not user-facing product endpoints.
+These are intentionally not user-facing product endpoints. `GET /fiber/node/readiness` is public but returns only client-safe reachability and payment-execution state.

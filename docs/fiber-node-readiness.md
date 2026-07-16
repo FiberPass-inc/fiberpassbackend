@@ -7,7 +7,7 @@ FiberPass treats the Fiber node as operator infrastructure. User balances are no
 - `GET /fiber/node/status`
 - `GET /fiber/node/readiness`
 
-Both endpoints return the same backend readiness object.
+`/fiber/node/readiness` is public and returns only configured/reachable state, provider/network names, check time, and payment-execution status. `/fiber/node/status` requires `Authorization: Bearer <CRON_SECRET>` and returns the detailed operator object below.
 
 ## Readiness Fields
 

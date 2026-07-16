@@ -60,6 +60,8 @@ const envSchema = z.object({
   RATE_LIMIT_GLOBAL_MAX: z.coerce.number().int().positive().default(600),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(20),
   RATE_LIMIT_APP_CHARGE_MAX: z.coerce.number().int().positive().default(120),
+  RATE_LIMIT_STORE: z.enum(['memory', 'mongo']).default('mongo'),
+  STREAM_TICKET_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(60),
   PAYMENT_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   PAYMENT_WORKER_BATCH_SIZE: z.coerce.number().int().positive().default(10),
   RECONCILIATION_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(15000),

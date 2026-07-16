@@ -66,7 +66,8 @@ Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lo
 
 All product endpoints are available at their current paths and under `/v1` aliases.
 
-- `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
 - `GET /meta`
 - `POST /auth/challenge`
 - `POST /auth/verify`
@@ -79,7 +80,8 @@ All product endpoints are available at their current paths and under `/v1` alias
 - `POST /wallet/funding/:fundingId/confirm`
 - `GET /sessions/create-policy`
 - `GET /sessions`
-- `GET /events`
+- `POST /events/ticket`
+- `GET /events?ticket=<short-lived-ticket>`
 - `POST /sessions`
 - `POST /sessions/:id/top-up`
 - `POST /sessions/:id/toggle-pause`

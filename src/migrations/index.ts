@@ -8,7 +8,9 @@ import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { DomainEventModel } from '../models/domainEvent.model.js';
 import { MigrationModel } from '../models/migration.model.js';
+import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
+import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { WalletModel } from '../models/wallet.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WebhookDeliveryModel } from '../models/webhookDelivery.model.js';
@@ -36,7 +38,9 @@ const indexedModels = [
   ChargeDailyCounterModel,
   DomainEventModel,
   MigrationModel,
+  RateLimitBucketModel,
   SessionModel,
+  StreamTicketModel,
   WalletModel,
   WalletFundingModel,
   WebhookDeliveryModel,
@@ -59,6 +63,8 @@ const createProductionIndexes: MigrationDefinition = {
   async up() {
     await dropIndexIfPresent(AuthChallengeModel.collection, 'expiresAt_1');
     await dropIndexIfPresent(AuthSessionModel.collection, 'expiresAt_1');
+    await dropIndexIfPresent(RateLimitBucketModel.collection, 'expiresAt_1');
+    await dropIndexIfPresent(StreamTicketModel.collection, 'expiresAt_1');
     for (const model of indexedModels) await model.createIndexes();
   }
 };
@@ -88,7 +94,19 @@ const encryptLegacyWebhookSecrets: MigrationDefinition = {
   }
 };
 
+const createSecurityControlIndexes: MigrationDefinition = {
+  id: '003-create-security-control-indexes',
+  description: 'Create shared rate-limit and short-lived stream-ticket indexes.',
+  async up() {
+    await dropIndexIfPresent(RateLimitBucketModel.collection, 'expiresAt_1');
+    await dropIndexIfPresent(StreamTicketModel.collection, 'expiresAt_1');
+    await RateLimitBucketModel.createIndexes();
+    await StreamTicketModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
-  encryptLegacyWebhookSecrets
+  encryptLegacyWebhookSecrets,
+  createSecurityControlIndexes
 ];

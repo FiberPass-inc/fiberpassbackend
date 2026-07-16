@@ -4,10 +4,9 @@ FiberPass keeps customer funds in the vault ledger. Fiber channels are operator 
 
 ## Read-Only Checks
 
-- `GET /fiber/channels/strategy`
 - `GET /fiber/node/readiness`
 
-These return configured peer targets, readiness alerts, channel counts, and operator liquidity thresholds. They do not move funds.
+The public readiness route returns only client-safe payment-execution state. It does not move funds.
 
 ## Operator Actions
 
@@ -15,6 +14,8 @@ These routes require `Authorization: Bearer <CRON_SECRET>`.
 
 - `POST /fiber/channels/test-open`
 - `POST /fiber/live-e2e`
+- `GET /fiber/channels/strategy`
+- `GET /fiber/node/status`
 
 `/fiber/channels/test-open` opens a small test channel with the provided peer id, or the first external peer in `FIBER_TARGET_PEER_IDS`. It rejects the local node peer id.
 
