@@ -6,6 +6,7 @@ import type {
   PaymentRail,
   PaymentResult
 } from '../domain/payment.js';
+import type { ConnectorFundingCapability } from '../domain/funding.js';
 
 export interface ConnectorCapability {
   connectorId: string;
@@ -15,6 +16,7 @@ export interface ConnectorCapability {
   destinationKinds: readonly PaymentDestinationKind[];
   supportsLookup: boolean;
   supportsRefund: boolean;
+  funding: readonly ConnectorFundingCapability[];
 }
 
 export interface ConnectorExecutionContext {

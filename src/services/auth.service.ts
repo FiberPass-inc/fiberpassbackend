@@ -9,10 +9,12 @@ import { AppApiKeyModel, AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
+import { FundingAllocationModel, FundingSourceModel } from '../models/fundingSource.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel } from '../models/wallet.model.js';
 import { writeAuditLog } from './audit.service.js';
+import { listFundingSources } from './fundingSource.service.js';
 import { syncWalletFunding } from './walletFunding.service.js';
 import type { AuthContext } from '../types/auth.js';
 import { ensureWalletForAddress, walletIdFromAddress, type WalletDto } from './session.service.js';
@@ -124,16 +126,18 @@ async function recoverLegacyJoyIdWallet(input: {
   const targetWalletId = input.targetWallet.walletId;
   if (legacyWalletId === targetWalletId) return input.targetWallet;
 
-  const [legacyWalletExists, fundingCount, sessionCount, chargeAttemptCount, appCount, apiKeyCount] = await Promise.all([
+  const [legacyWalletExists, fundingCount, sourceCount, allocationCount, sessionCount, chargeAttemptCount, appCount, apiKeyCount] = await Promise.all([
     WalletModel.exists({ walletId: legacyWalletId }),
     WalletFundingModel.countDocuments({ walletId: legacyWalletId }),
+    FundingSourceModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    FundingAllocationModel.countDocuments({ ownerWalletId: legacyWalletId }),
     SessionModel.countDocuments({ ownerWalletId: legacyWalletId }),
     ChargeAttemptModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppApiKeyModel.countDocuments({ ownerWalletId: legacyWalletId })
   ]);
 
-  if (!legacyWalletExists && fundingCount + sessionCount + chargeAttemptCount + appCount + apiKeyCount === 0) {
+  if (!legacyWalletExists && fundingCount + sourceCount + allocationCount + sessionCount + chargeAttemptCount + appCount + apiKeyCount === 0) {
     return input.targetWallet;
   }
 
@@ -164,11 +168,13 @@ async function recoverLegacyJoyIdWallet(input: {
     );
   }
 
-  const [fundingResult, sessionResult, chargeAttemptResult, appResult, apiKeyResult, authSessionResult] = await Promise.all([
+  const [fundingResult, sourceResult, allocationResult, sessionResult, chargeAttemptResult, appResult, apiKeyResult, authSessionResult] = await Promise.all([
     WalletFundingModel.updateMany(
       { walletId: legacyWalletId, status: 'confirmed' },
       { $set: { walletId: targetWalletId, walletAddress: input.targetAddress } }
     ),
+    FundingSourceModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
+    FundingAllocationModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     SessionModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     ChargeAttemptModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     AppModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
@@ -180,6 +186,8 @@ async function recoverLegacyJoyIdWallet(input: {
 
   const movedRecords = {
     funding: modifiedCount(fundingResult),
+    fundingSources: modifiedCount(sourceResult),
+    fundingAllocations: modifiedCount(allocationResult),
     sessions: modifiedCount(sessionResult),
     chargeAttempts: modifiedCount(chargeAttemptResult),
     apps: modifiedCount(appResult),
@@ -209,7 +217,7 @@ async function recoverLegacyJoyIdWallet(input: {
   return currentTargetWallet ? currentTargetWallet.toObject() : input.targetWallet;
 }
 
-function walletDto(input: { connected?: boolean; address: string; balance: number; balanceMinor?: number | null; currency: string }): WalletDto {
+async function walletDto(input: { walletId: string; connected?: boolean; address: string; balance: number; balanceMinor?: number | null; currency: string }): Promise<WalletDto> {
   const balanceMinor = balanceMinorForWallet(input);
   return {
     contractVersion: PAYMENT_CONTRACT_VERSION,
@@ -221,7 +229,10 @@ function walletDto(input: { connected?: boolean; address: string; balance: numbe
     balanceMinor,
     balanceAtomic: legacyMinorToAtomicAmount(balanceMinor),
     currency: input.currency,
-    assetId: assetIdForLegacyCurrency(input.currency)
+    assetId: assetIdForLegacyCurrency(input.currency),
+    balanceSource: 'legacy_compatibility_projection',
+    balanceGuarantee: 'authorization_only',
+    fundingSources: await listFundingSources(input.walletId)
   };
 }
 
@@ -352,7 +363,8 @@ export async function verifyAuthChallenge(input: AuthVerifyInput): Promise<AuthV
   return {
     token,
     expiresAt: expiresAt.toISOString(),
-    wallet: walletDto({
+    wallet: await walletDto({
+      walletId: wallet.walletId,
       connected: true,
       address: normalizedAddress,
       balance: wallet.balance,
@@ -418,7 +430,8 @@ export async function revokeAuthToken(token: string): Promise<void> {
 export async function getWalletForAuthContext(auth: AuthContext): Promise<{ wallet: WalletDto }> {
   const wallet = await ensureWalletForAddress(auth.address);
   return {
-    wallet: walletDto({
+    wallet: await walletDto({
+      walletId: wallet.walletId,
       connected: true,
       address: wallet.address,
       balance: wallet.balance,

@@ -19,6 +19,7 @@ jobs:
       WORKER_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       PLATFORM_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       IDENTITY_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+      FUNDING_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       WEBHOOK_SECRET_ENCRYPTION_KEY: 1111111111111111111111111111111111111111111111111111111111111111
     steps:
       - uses: actions/checkout@v6
@@ -44,6 +45,7 @@ jobs:
       - run: npm run test:workers
       - run: npm run test:platform
       - run: npm run test:identity
+      - run: npm run test:funding
 
   vault-lock:
     runs-on: ubuntu-latest

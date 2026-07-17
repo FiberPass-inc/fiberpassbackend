@@ -40,7 +40,15 @@ class FakeConnector implements PaymentConnector {
       assetId: asAssetId('bitcoin:btc'),
       destinationKinds: ['invoice' as const],
       supportsLookup: true,
-      supportsRefund: false
+      supportsRefund: false,
+      funding: [{
+        mode: 'connected_wallet' as const,
+        guarantee: 'authorization_only' as const,
+        requiresNetworkProof: false,
+        supportsExecution: true,
+        balanceSource: 'external_wallet' as const,
+        failureStates: []
+      }]
     }];
   }
 
@@ -130,6 +138,8 @@ const vaultPayout = async (_input: VaultPayoutInput): Promise<VaultPayoutResult>
 const connector = new FiberConnector(new FiberAdapter(provider), provider, vaultPayout);
 const fiberIntent = intent();
 const quote = await connector.quote(fiberIntent);
+assert.equal(connector.capabilities()[0].funding.find((item) => item.mode === 'secured_autopay')?.requiresNetworkProof, true);
+assert.equal(connector.capabilities()[0].funding.find((item) => item.mode === 'connected_wallet')?.supportsExecution, false);
 assert.equal(quote.connectorId, 'fiber-rpc');
 assert.equal(quote.metadata?.providerCorrelationId, paymentHash);
 assert.equal(quote.metadata?.invoiceAmountAtomic, '2000000');

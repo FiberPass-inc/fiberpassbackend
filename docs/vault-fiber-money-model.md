@@ -11,9 +11,17 @@ funds, not proof that an external wallet still has liquid balance.
 
 - Users load CKB into an owner-bound testnet contract address.
 - The backend records the deposit against the connected JoyID CKB wallet.
-- Creating a pass reserves that user's vault balance by moving it from available balance into the pass limit.
-- Charges and scheduled payouts spend from the reserved pass balance.
-- Closing, revoking, or settling a pass returns unused reserved balance to that user's available vault balance.
+- A `secured_autopay` pass allocates proof-backed locked value to the pass
+  policy. The allocation is called `policyReserved`; it is not a MongoDB lock
+  or a second on-chain transfer.
+- A `connected_wallet` pass records authorization only. It remains valid when
+  the observed external balance changes, while execution can be blocked as
+  insufficient or stale.
+- Charges and scheduled payouts spend from the selected pass allocation only
+  after the source and connector execution checks pass.
+- Closing, revoking, or settling a pass releases its unused allocation.
+  Secured value becomes reclaimable; connected-wallet authorization is simply
+  removed.
 
 The dashboard must label this value as contract-locked CKB testnet funds and
 show the source and observation time. It must not label the value as the user's

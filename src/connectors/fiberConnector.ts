@@ -72,6 +72,33 @@ export class FiberConnector implements PaymentConnector {
   }
 
   capabilities(): readonly ConnectorCapability[] {
+    const funding = [
+      {
+        mode: 'connected_wallet' as const,
+        guarantee: 'authorization_only' as const,
+        requiresNetworkProof: false,
+        supportsExecution: false,
+        balanceSource: 'external_wallet' as const,
+        failureStates: [
+          'CONNECTED_WALLET_BALANCE_UNVERIFIED',
+          'CONNECTED_WALLET_BALANCE_STALE',
+          'CONNECTED_WALLET_LIQUIDITY_INSUFFICIENT',
+          'CONNECTED_WALLET_EXECUTION_UNAVAILABLE'
+        ]
+      },
+      {
+        mode: 'secured_autopay' as const,
+        guarantee: 'network_locked_operator_controlled' as const,
+        requiresNetworkProof: true,
+        supportsExecution: true,
+        balanceSource: 'network_contract' as const,
+        failureStates: [
+          'SECURED_FUNDING_PROOF_REQUIRED',
+          'SECURED_FUNDING_INSUFFICIENT',
+          'FIBER_LIQUIDITY_BRIDGE_PENDING'
+        ]
+      }
+    ];
     return [
       {
         connectorId: this.id,
@@ -80,7 +107,8 @@ export class FiberConnector implements PaymentConnector {
         assetId: CKB_ASSET_ID,
         destinationKinds: ['invoice', 'endpoint'],
         supportsLookup: true,
-        supportsRefund: false
+        supportsRefund: false,
+        funding
       },
       {
         connectorId: this.id,
@@ -89,7 +117,8 @@ export class FiberConnector implements PaymentConnector {
         assetId: CKB_ASSET_ID,
         destinationKinds: ['address'],
         supportsLookup: false,
-        supportsRefund: false
+        supportsRefund: false,
+        funding
       }
     ];
   }
