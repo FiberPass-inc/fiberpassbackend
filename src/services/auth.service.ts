@@ -7,6 +7,7 @@ import { ApiError } from '../lib/errors.js';
 import { fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount } from '../lib/money.js';
 import { AppApiKeyModel, AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
+import { BitcoinPsbtModel, BtcpayConnectionModel, BtcpayInvoiceModel, BtcpayPaymentModel } from '../models/bitcoin.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { FundingAllocationModel, FundingSourceModel } from '../models/fundingSource.model.js';
@@ -127,20 +128,42 @@ async function recoverLegacyJoyIdWallet(input: {
   const targetWalletId = input.targetWallet.walletId;
   if (legacyWalletId === targetWalletId) return input.targetWallet;
 
-  const [legacyWalletExists, fundingCount, sourceCount, allocationCount, nwcConnectionCount, nwcPaymentCount, sessionCount, chargeAttemptCount, appCount, apiKeyCount] = await Promise.all([
+  const [
+    legacyWalletExists,
+    fundingCount,
+    sourceCount,
+    allocationCount,
+    nwcConnectionCount,
+    nwcPaymentCount,
+    btcpayConnectionCount,
+    btcpayInvoiceCount,
+    btcpayPaymentCount,
+    bitcoinPsbtCount,
+    sessionCount,
+    chargeAttemptCount,
+    appCount,
+    apiKeyCount
+  ] = await Promise.all([
     WalletModel.exists({ walletId: legacyWalletId }),
     WalletFundingModel.countDocuments({ walletId: legacyWalletId }),
     FundingSourceModel.countDocuments({ ownerWalletId: legacyWalletId }),
     FundingAllocationModel.countDocuments({ ownerWalletId: legacyWalletId }),
     NwcConnectionModel.countDocuments({ ownerWalletId: legacyWalletId }),
     NwcPaymentModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    BtcpayConnectionModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    BtcpayInvoiceModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    BtcpayPaymentModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    BitcoinPsbtModel.countDocuments({ ownerWalletId: legacyWalletId }),
     SessionModel.countDocuments({ ownerWalletId: legacyWalletId }),
     ChargeAttemptModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppApiKeyModel.countDocuments({ ownerWalletId: legacyWalletId })
   ]);
 
-  if (!legacyWalletExists && fundingCount + sourceCount + allocationCount + nwcConnectionCount + nwcPaymentCount + sessionCount + chargeAttemptCount + appCount + apiKeyCount === 0) {
+  const legacyRecordCount = fundingCount + sourceCount + allocationCount + nwcConnectionCount + nwcPaymentCount
+    + btcpayConnectionCount + btcpayInvoiceCount + btcpayPaymentCount + bitcoinPsbtCount
+    + sessionCount + chargeAttemptCount + appCount + apiKeyCount;
+  if (!legacyWalletExists && legacyRecordCount === 0) {
     return input.targetWallet;
   }
 
@@ -171,7 +194,22 @@ async function recoverLegacyJoyIdWallet(input: {
     );
   }
 
-  const [fundingResult, sourceResult, allocationResult, nwcConnectionResult, nwcPaymentResult, sessionResult, chargeAttemptResult, appResult, apiKeyResult, authSessionResult] = await Promise.all([
+  const [
+    fundingResult,
+    sourceResult,
+    allocationResult,
+    nwcConnectionResult,
+    nwcPaymentResult,
+    btcpayConnectionResult,
+    btcpayInvoiceResult,
+    btcpayPaymentResult,
+    bitcoinPsbtResult,
+    sessionResult,
+    chargeAttemptResult,
+    appResult,
+    apiKeyResult,
+    authSessionResult
+  ] = await Promise.all([
     WalletFundingModel.updateMany(
       { walletId: legacyWalletId, status: 'confirmed' },
       { $set: { walletId: targetWalletId, walletAddress: input.targetAddress } }
@@ -188,6 +226,26 @@ async function recoverLegacyJoyIdWallet(input: {
       }]
     ),
     NwcPaymentModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
+    BtcpayConnectionModel.collection.updateMany(
+      { ownerWalletId: legacyWalletId },
+      [{
+        $set: {
+          ownerWalletId: targetWalletId,
+          scopeId: { $cond: [{ $eq: ['$scopeType', 'wallet'] }, targetWalletId, '$scopeId'] }
+        }
+      }]
+    ),
+    BtcpayInvoiceModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
+    BtcpayPaymentModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
+    BitcoinPsbtModel.collection.updateMany(
+      { ownerWalletId: legacyWalletId },
+      [{
+        $set: {
+          ownerWalletId: targetWalletId,
+          scopeId: { $cond: [{ $eq: ['$scopeType', 'wallet'] }, targetWalletId, '$scopeId'] }
+        }
+      }]
+    ),
     SessionModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     ChargeAttemptModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     AppModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
@@ -203,6 +261,10 @@ async function recoverLegacyJoyIdWallet(input: {
     fundingAllocations: modifiedCount(allocationResult),
     nwcConnections: modifiedCount(nwcConnectionResult),
     nwcPayments: modifiedCount(nwcPaymentResult),
+    btcpayConnections: modifiedCount(btcpayConnectionResult),
+    btcpayInvoices: modifiedCount(btcpayInvoiceResult),
+    btcpayPayments: modifiedCount(btcpayPaymentResult),
+    bitcoinPsbts: modifiedCount(bitcoinPsbtResult),
     sessions: modifiedCount(sessionResult),
     chargeAttempts: modifiedCount(chargeAttemptResult),
     apps: modifiedCount(appResult),

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Types } from 'mongoose';
 import { AppApiKeyModel, AppModel } from '../models/app.model.js';
+import { BitcoinPsbtModel, BtcpayConnectionModel, BtcpayInvoiceModel, BtcpayPaymentModel } from '../models/bitcoin.model.js';
 import { AuditLogModel } from '../models/auditLog.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from '../models/automation.model.js';
@@ -43,6 +44,10 @@ const indexedModels = [
   AuditLogModel,
   AuthChallengeModel,
   AuthSessionModel,
+  BtcpayConnectionModel,
+  BtcpayInvoiceModel,
+  BtcpayPaymentModel,
+  BitcoinPsbtModel,
   RecipientModel,
   InvoiceModel,
   PaymentJobModel,
@@ -171,6 +176,17 @@ const createNwcConnectionModels: MigrationDefinition = {
   }
 };
 
+const createBitcoinConnectorModels: MigrationDefinition = {
+  id: '008-create-bitcoin-connector-models',
+  description: 'Create encrypted BTCPay and restart-safe interactive Bitcoin PSBT indexes.',
+  async up() {
+    await BtcpayConnectionModel.createIndexes();
+    await BtcpayInvoiceModel.createIndexes();
+    await BtcpayPaymentModel.createIndexes();
+    await BitcoinPsbtModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
@@ -178,5 +194,6 @@ export const migrations: readonly MigrationDefinition[] = [
   migrateAtomicMoneyContracts,
   separateRecipientIdentityData,
   modelFundingSources,
-  createNwcConnectionModels
+  createNwcConnectionModels,
+  createBitcoinConnectorModels
 ];

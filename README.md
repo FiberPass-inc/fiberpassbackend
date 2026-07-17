@@ -31,6 +31,9 @@ documented in [docs/payment-connectors.md](docs/payment-connectors.md).
 Existing-wallet Lightning pairing, NIP-47 allowance rules, invoice validation,
 and timeout reconciliation are documented in
 [docs/nwc-lightning.md](docs/nwc-lightning.md).
+Self-hosted BTCPay pairing, receive and Lightning payment recovery, interactive
+Bitcoin PSBT signing, RBF, and Core deployment are documented in
+[docs/bitcoin-btcpay-psbt.md](docs/bitcoin-btcpay-psbt.md).
 Recipient identity, single-use destination claims, reusable destination rules,
 and privacy deletion are documented in
 [docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
@@ -45,6 +48,9 @@ and privacy deletion are documented in
   minor-unit fields remain only as the CKB/Fiber v1 compatibility projection
 - Fiber Network JSON-RPC provider only
 - Nostr Wallet Connect for externally owned Bitcoin Lightning wallets
+- Self-hosted BTCPay Greenfield for scoped Bitcoin/Lightning operations
+- Interactive Bitcoin PSBT construction with walletless Core validation and
+  broadcast
 - Rate limiting, audit logs, request IDs, and production env validation
 
 ## Run Locally
@@ -107,6 +113,17 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /wallet/nwc-connections/:connectionId/payments`
 - `GET /wallet/nwc-connections/:connectionId/payments/:paymentHash`
 - `DELETE /wallet/nwc-connections/:connectionId`
+- `GET /wallet/btcpay-connections`
+- `POST /wallet/btcpay-connections`
+- `DELETE /wallet/btcpay-connections/:connectionId`
+- `POST /wallet/btcpay-connections/:connectionId/invoices`
+- `GET /wallet/btcpay-connections/:connectionId/invoices/:invoiceId`
+- `POST /wallet/btcpay-connections/:connectionId/lightning-payments`
+- `GET /wallet/btcpay-connections/:connectionId/lightning-payments/:paymentHash`
+- `POST /wallet/bitcoin/psbts`
+- `GET /wallet/bitcoin/psbts/:psbtId`
+- `POST /wallet/bitcoin/psbts/:psbtId/submit`
+- `POST /wallet/bitcoin/psbts/:psbtId/abandon`
 - `POST /wallet/funding`
 - `POST /wallet/funding/sync`
 - `POST /wallet/funding/:fundingId/confirm`
@@ -150,6 +167,8 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 ```bash
 npm run build
 npm test
+npm run test:bitcoin
+npm run test:bitcoin-core-regtest
 ```
 
 The existing Mongoose duplicate-index warning is non-blocking test output; build and test exit codes must remain zero.

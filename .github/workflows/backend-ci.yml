@@ -21,6 +21,11 @@ jobs:
       IDENTITY_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       FUNDING_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       NWC_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+      BITCOIN_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+      BITCOIN_CORE_REGTEST_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+      BITCOIN_CORE_REGTEST_RPC_URL: http://127.0.0.1:18443
+      BITCOIN_CORE_REGTEST_RPC_USER: fiberpass
+      BITCOIN_CORE_REGTEST_RPC_PASSWORD: be07-regtest-only
       NWC_SECRET_ENCRYPTION_KEY: 2222222222222222222222222222222222222222222222222222222222222222
       WEBHOOK_SECRET_ENCRYPTION_KEY: 1111111111111111111111111111111111111111111111111111111111111111
     steps:
@@ -38,6 +43,13 @@ jobs:
             sleep 1
           done
           docker exec fiberpass-ci-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+      - name: Start Bitcoin Core regtest
+        run: |
+          docker run -d --name fiberpass-ci-bitcoin -p 18443:18443 btcpayserver/bitcoin:29.1@sha256:1b54d1ad812c394200af81de4f28a6435d728b7c30460c31575b14aa26623fb6 bitcoind -regtest -server=1 -txindex=1 -fallbackfee=0.00001000 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=fiberpass -rpcpassword=be07-regtest-only -printtoconsole
+          for attempt in {1..30}; do
+            docker exec fiberpass-ci-bitcoin bitcoin-cli -regtest -rpcuser=fiberpass -rpcpassword=be07-regtest-only getblockchaininfo && break
+            sleep 1
+          done
       - run: npm run lint
       - run: npm run build
       - run: npm test
@@ -49,6 +61,8 @@ jobs:
       - run: npm run test:identity
       - run: npm run test:funding
       - run: npm run test:nwc
+      - run: npm run test:bitcoin
+      - run: npm run test:bitcoin-core-regtest
 
   vault-lock:
     runs-on: ubuntu-latest

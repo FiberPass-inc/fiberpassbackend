@@ -75,6 +75,14 @@ const envSchema = z.object({
   NWC_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
   NWC_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   NWC_ALLOW_INSECURE_LOCAL_RELAY: booleanFromEnv.default(false),
+  BTCPAY_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
+  BTCPAY_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
+  BTCPAY_ALLOW_INSECURE_LOCAL: booleanFromEnv.default(false),
+  BITCOIN_NETWORK: z.enum(['mainnet', 'testnet', 'signet', 'regtest']).default('regtest'),
+  BITCOIN_CORE_RPC_URL: z.string().optional().default(''),
+  BITCOIN_CORE_RPC_USER: z.string().optional().default(''),
+  BITCOIN_CORE_RPC_PASSWORD: z.string().optional().default(''),
+  BITCOIN_CORE_RPC_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   CRON_SECRET: z.string().optional().default(""),
   AUTOMATION_MAX_INVOICE_CKB: z.coerce.number().positive().default(1000),
   AUTOMATION_MAX_BATCH_CKB: z.coerce.number().positive().default(5000),
@@ -139,6 +147,24 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['NWC_ALLOW_INSECURE_LOCAL_RELAY'],
         message: 'Insecure local NWC relays cannot be enabled in production.'
+      });
+    }
+
+    const btcpayKey = /^[a-f0-9]{64}$/i.test(env.BTCPAY_SECRET_ENCRYPTION_KEY.trim())
+      ? Buffer.from(env.BTCPAY_SECRET_ENCRYPTION_KEY.trim(), 'hex')
+      : Buffer.from(env.BTCPAY_SECRET_ENCRYPTION_KEY.trim(), 'base64');
+    if (btcpayKey.length !== 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BTCPAY_SECRET_ENCRYPTION_KEY'],
+        message: 'BTCPAY_SECRET_ENCRYPTION_KEY must contain 32 random bytes encoded as hex or base64 in production.'
+      });
+    }
+    if (env.BTCPAY_ALLOW_INSECURE_LOCAL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BTCPAY_ALLOW_INSECURE_LOCAL'],
+        message: 'Insecure local BTCPay connections cannot be enabled in production.'
       });
     }
   }

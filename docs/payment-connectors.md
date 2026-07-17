@@ -2,8 +2,10 @@
 
 Payment connectors isolate rail, network, destination, proof, and provider
 behavior from session policy and ledger code. The registry selects one connector
-by the exact tuple `(rail, network, assetId)`; it does not fall back by currency
-or silently substitute a network.
+by the exact tuple `(rail, network, assetId)`. When multiple providers advertise
+the same tuple, callers may select an exact `connectorId`; omission preserves
+the first registered default. It does not fall back by currency or silently
+substitute a network.
 
 ## Lifecycle
 
@@ -46,6 +48,14 @@ payment-hash lookup before any retry after an uncertain outcome. Its funding
 mode is `connected_wallet`: the external wallet retains funds and enforcement.
 See [nwc-lightning.md](nwc-lightning.md) for pairing, allowance, storage, and
 disconnect guarantees.
+
+`BtcpayConnector` is an alternate `lightning` + `bitcoin:btc` provider for
+mainnet, testnet, signet, and regtest. It uses an encrypted, exact-store-scoped
+Greenfield key and reconciles by payment hash before retry. `BitcoinPsbtConnector`
+advertises `bitcoin_onchain` + `bitcoin:btc` for the configured Core network.
+It is interactive only: quote succeeds, execution requires an external wallet
+signature, and transaction lookup uses Core. See
+[bitcoin-btcpay-psbt.md](bitcoin-btcpay-psbt.md) for custody and operations.
 
 ## Capability Discovery
 
