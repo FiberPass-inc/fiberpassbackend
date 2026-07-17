@@ -362,6 +362,7 @@ async function validateExecutorConnection(input: {
   network: string;
   assetId: string;
   maxBatchAtomic: string;
+  totalLimitAtomic: string;
 }): Promise<void> {
   if (input.executor === 'fiber') return;
   if (input.executor === 'nwc') {
@@ -385,7 +386,11 @@ async function validateExecutorConnection(input: {
       throw new ApiError(409, 'METERED_NWC_CAPABILITY_INVALID', 'NWC connection lacks the network, allowance, pay, lookup, or unattended capability required for metering.');
     }
     const remaining = parseAtomicAmount(connection.allowanceAtomic) - parseAtomicAmount(connection.allowanceUsedAtomic);
-    if (remaining < parseAtomicAmount(input.maxBatchAtomic)) {
+    const required = [
+      parseAtomicAmount(input.maxBatchAtomic),
+      parseAtomicAmount(input.totalLimitAtomic)
+    ].reduce((minimum, amount) => amount < minimum ? amount : minimum);
+    if (remaining < required) {
       throw new ApiError(402, 'METERED_NWC_ALLOWANCE_INSUFFICIENT', 'NWC wallet allowance cannot cover one maximum metered batch.');
     }
     return;
@@ -487,7 +492,8 @@ export async function createMeteredGrant(actor: MeteredActor, input: CreateMeter
     connectionId: input.connectionId,
     network: input.network.trim().toLowerCase(),
     assetId,
-    maxBatchAtomic
+    maxBatchAtomic,
+    totalLimitAtomic
   });
   const grant = await MeteredGrantModel.create({
     grantId: newMeteredId('fp_mg_'),
