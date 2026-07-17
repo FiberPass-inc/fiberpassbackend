@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
+import { PaymentReceiptModel } from '../models/receipt.model.js';
 import { SessionModel } from '../models/session.model.js';
 import {
   ChargeReservationError,
@@ -66,7 +67,8 @@ try {
   await Promise.all([
     SessionModel.syncIndexes(),
     ChargeAttemptModel.syncIndexes(),
-    ChargeDailyCounterModel.syncIndexes()
+    ChargeDailyCounterModel.syncIndexes(),
+    PaymentReceiptModel.syncIndexes(),
   ]);
 
   await createSession('fp_pass_contention', 100_000_000);
@@ -134,6 +136,14 @@ try {
   assert.equal(finalizedSession?.reservedMinor, 0);
   assert.equal(finalizedSession?.spentMinor, 10_000_000);
   assert.equal(await ChargeAttemptModel.countDocuments({ attemptId: finalizable.attemptId, status: 'succeeded' }), 1);
+  const directReceipt = await PaymentReceiptModel.findOne({ sourceType: 'charge_attempt', sourceId: finalizable.attemptId }).lean();
+  assert.equal(await PaymentReceiptModel.countDocuments({ sourceType: 'charge_attempt', sourceId: finalizable.attemptId }), 1);
+  assert.equal(directReceipt?.ownerWalletId, 'wallet-integration');
+  assert.equal(directReceipt?.rail, 'fiber');
+  assert.equal(directReceipt?.network, 'testnet');
+  assert.equal(directReceipt?.assetId, 'ckb:ckb');
+  assert.equal(directReceipt?.amountAtomic, '10000000');
+  assert.equal(directReceipt?.proofReference, duplicateInput.providerCorrelationId);
 
   const uncertainAttempt = accepted[0].status === 'fulfilled' ? accepted[0].value.attempt : undefined;
   assert.ok(uncertainAttempt);

@@ -6,12 +6,12 @@ Notification delivery is best-effort and cannot change settlement state.
 
 ## Immutable receipt contract
 
-Successful scheduled occurrences and settled metered usage events create a
-`PaymentReceipt` in the same MongoDB transaction that finalizes accounting. The
+Successful direct charges, scheduled occurrences, and settled metered usage
+events create a `PaymentReceipt` in the transaction that finalizes accounting. The
 receipt contains:
 
 - a deterministic receipt id and SHA-256 receipt hash;
-- the occurrence or usage-event source id and settlement id;
+- the charge-attempt, occurrence, or usage-event source id and settlement id;
 - rail, network, asset id, exact atomic-unit amount, and exact fee when known;
 - terminal status, settlement time, payment hash, and public network proof.
 

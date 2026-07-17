@@ -1,14 +1,64 @@
-import type { FilterQuery } from 'mongoose';
-import { assetIdForLegacyCurrency } from '../domain/payment.js';
+import type { ClientSession, FilterQuery } from 'mongoose';
+import { assetIdForLegacyCurrency, type PaymentRail } from '../domain/payment.js';
+import { logger } from '../lib/logger.js';
 import { legacyMinorToAtomicAmount } from '../lib/money.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { SessionModel, type SessionRecord } from '../models/session.model.js';
 import { releaseFundingAllocation, spendFundingAllocation } from './fundingSource.service.js';
+import { createPaymentReceipt, queueReceiptNotifications } from './receipt.service.js';
 
 const EXECUTION_LEASE_MS = 60_000;
 
 export type ChargeAttemptLike = ChargeAttemptRecord & { createdAt?: Date };
+function attemptMetadata(attempt: ChargeAttemptLike): Record<string, unknown> {
+  const value = attempt.metadata;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function hasSpecializedReceipt(attempt: ChargeAttemptLike): boolean {
+  const metadata = attemptMetadata(attempt);
+  return typeof metadata.occurrenceId === 'string'
+    || typeof metadata.meteredReceiptId === 'string';
+}
+
+function chargeReceiptRail(attempt: ChargeAttemptLike): PaymentRail {
+  if (attempt.executionLayer === 'lightning') return 'lightning';
+  if (attempt.executionLayer === 'ckb-vault') return 'ckb_onchain';
+  return 'fiber';
+}
+
+async function createDirectChargeReceipt(
+  attempt: ChargeAttemptLike,
+  ownerWalletId: string,
+  session: ClientSession
+): Promise<string | undefined> {
+  const metadata = attemptMetadata(attempt);
+  if (hasSpecializedReceipt(attempt)) return undefined;
+  const proofReference = attempt.proofId ?? undefined;
+  const recipientId = typeof metadata.recipientId === 'string' ? metadata.recipientId : undefined;
+  return createPaymentReceipt({
+    ownerWalletId,
+    recipientId,
+    sourceType: 'charge_attempt',
+    sourceId: attempt.attemptId,
+    settlementId: attempt.providerCorrelationId ?? proofReference ?? attempt.attemptId,
+    rail: chargeReceiptRail(attempt),
+    network: attempt.network ?? 'unknown',
+    assetId: attempt.assetId ?? assetIdForLegacyCurrency(attempt.currency),
+    amountAtomic: attempt.amountAtomic ?? legacyMinorToAtomicAmount(attempt.amountMinor ?? 0),
+    status: 'succeeded',
+    paymentHash: (
+      attempt.proofType === 'fiber_payment' || attempt.proofType === 'payment_hash'
+        ? proofReference
+        : undefined
+    ),
+    proofKind: attempt.proofType ?? undefined,
+    proofReference,
+    settledAt: attempt.finalizedAt ?? new Date()
+  }, session);
+}
+
 
 export class ChargeReservationError extends Error {
   constructor(public readonly code: 'SESSION_RESERVATION_REJECTED' | 'DAILY_RESERVATION_REJECTED', message: string) {
@@ -360,10 +410,17 @@ export async function releaseChargeReservation(attemptId: string, failureCode: s
 
 export async function finalizeChargeReservation(attemptId: string): Promise<ChargeAttemptLike> {
   let finalized: ChargeAttemptLike | undefined;
+  let receiptId: string | undefined;
   await SessionModel.db.transaction(async (mongoSession) => {
     const attempt = await ChargeAttemptModel.findOne({ attemptId }).session(mongoSession);
     if (!attempt) throw new Error('Charge attempt was not found for finalization.');
     if (attempt.status === 'succeeded' && attempt.reserveStatus === 'debited') {
+      const receiptOwnerWalletId = attempt.ownerWalletId ?? (
+        await SessionModel.findOne({ publicId: attempt.sessionId })
+          .select({ ownerWalletId: 1 }).session(mongoSession).lean<{ ownerWalletId?: string } | null>()
+      )?.ownerWalletId;
+      if (!receiptOwnerWalletId) throw new Error('Charge receipt owner is missing.');
+      receiptId = await createDirectChargeReceipt(attempt.toObject() as ChargeAttemptLike, receiptOwnerWalletId, mongoSession);
       finalized = attempt.toObject() as ChargeAttemptLike;
       return;
     }
@@ -407,8 +464,14 @@ export async function finalizeChargeReservation(attemptId: string): Promise<Char
     attempt.executionLeaseExpiresAt = new Date();
     await attempt.save({ session: mongoSession });
     finalized = attempt.toObject() as ChargeAttemptLike;
+    receiptId = await createDirectChargeReceipt(attempt.toObject() as ChargeAttemptLike, updatedSession.ownerWalletId, mongoSession);
   });
 
+  if (receiptId) {
+    await queueReceiptNotifications(receiptId).catch((error) => {
+      logger.warn('receipt_notification_queue_failed', { receiptId, error });
+    });
+  }
   if (!finalized) throw new Error('Charge finalization transaction completed without an attempt.');
   return finalized;
 }
