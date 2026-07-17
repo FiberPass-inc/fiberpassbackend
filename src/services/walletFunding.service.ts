@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
+import { assetIdForLegacyCurrency, PAYMENT_CONTRACT_VERSION } from '../domain/payment.js';
 import { ApiError } from '../lib/errors.js';
 import { liveEvents } from '../lib/liveEvents.js';
-import { fromMinorUnits, toMinorUnits } from '../lib/money.js';
+import { fromMinorUnits, legacyMinorToAtomicAmount, toMinorUnits } from '../lib/money.js';
 import { ckbTransactionExplorerUrl } from '../lib/ckbExplorer.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { SessionModel } from '../models/session.model.js';
@@ -35,15 +36,19 @@ type ActivitySource = 'funding' | 'chain' | 'payment' | 'session';
 type ChainBalanceStatus = 'ok' | 'unavailable' | 'not_configured';
 
 export interface WalletFundingConfigDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   currency: string;
+  assetId: string;
   network: string;
   depositMode: 'vault' | 'treasury';
   depositAddress: string;
   configured: boolean;
   minAmount: number;
   minAmountMinor: number;
+  minAmountAtomic: string;
   maxAmount: number;
   maxAmountMinor: number;
+  maxAmountAtomic: string;
   chain: {
     rpcConfigured: boolean;
     indexerConfigured: boolean;
@@ -63,11 +68,14 @@ export interface WalletFundingConfigDto {
 }
 
 export interface WalletFundingRequestDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   walletAddress: string;
   amount: number;
   amountMinor: number;
+  amountAtomic: string;
   currency: string;
+  assetId: string;
   network: string;
   depositMode?: string;
   depositAddress: string;
@@ -84,6 +92,7 @@ export interface WalletFundingRequestDto {
   chainBlockHash?: string;
   chainBlockNumber?: string;
   chainCapacityShannons?: number;
+  chainCapacityAtomic?: string;
   chainConfirmedAt?: string;
   status: WalletFundingRecord['status'];
   createdAt: string;
@@ -169,15 +178,19 @@ function getFundingConfig(wallet?: Pick<WalletRecord, 'walletId' | 'address'>): 
   const minAmountMinor = minimumFundingMinor(vault);
 
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     currency: FUNDING_CURRENCY,
+    assetId: assetIdForLegacyCurrency(FUNDING_CURRENCY),
     network: env.FIBER_NETWORK,
     depositMode,
     depositAddress,
     configured: Boolean(depositAddress),
     minAmount: fromMinorUnits(minAmountMinor, FUNDING_CURRENCY),
     minAmountMinor,
+    minAmountAtomic: legacyMinorToAtomicAmount(minAmountMinor),
     maxAmount: fromMinorUnits(MAX_FUNDING_MINOR, FUNDING_CURRENCY),
     maxAmountMinor: MAX_FUNDING_MINOR,
+    maxAmountAtomic: legacyMinorToAtomicAmount(MAX_FUNDING_MINOR),
     chain: {
       rpcConfigured: Boolean(env.CKB_TESTNET_RPC_URL),
       indexerConfigured: Boolean(env.CKB_TESTNET_INDEXER_URL)
@@ -213,11 +226,14 @@ function requireFundingConfig(wallet: Pick<WalletRecord, 'walletId' | 'address'>
 
 function toFundingDto(record: WalletFundingRecord & { createdAt?: Date; confirmedAt?: Date | null; chainConfirmedAt?: Date | null }): WalletFundingRequestDto {
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: record.fundingId,
     walletAddress: record.walletAddress,
     amount: fromMinorUnits(record.amountMinor, record.currency),
     amountMinor: record.amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(record.amountMinor),
     currency: record.currency,
+    assetId: assetIdForLegacyCurrency(record.currency),
     network: record.network,
     depositMode: record.depositMode ?? 'treasury',
     depositAddress: record.depositAddress,
@@ -234,6 +250,7 @@ function toFundingDto(record: WalletFundingRecord & { createdAt?: Date; confirme
     chainBlockHash: record.chainBlockHash ?? undefined,
     chainBlockNumber: record.chainBlockNumber ?? undefined,
     chainCapacityShannons: record.chainCapacityShannons ?? undefined,
+    chainCapacityAtomic: record.chainCapacityShannons == null ? undefined : legacyMinorToAtomicAmount(record.chainCapacityShannons),
     chainConfirmedAt: record.chainConfirmedAt?.toISOString(),
     status: record.status,
     createdAt: (record.createdAt ?? new Date()).toISOString(),
@@ -579,7 +596,10 @@ async function createRecoveredFundingRecord(input: { wallet: WalletRecord; vault
     walletAddress: input.wallet.address,
     amount: fromMinorUnits(input.cell.capacityShannons, FUNDING_CURRENCY),
     amountMinor: input.cell.capacityShannons,
+    amountAtomic: legacyMinorToAtomicAmount(input.cell.capacityShannons),
     currency: FUNDING_CURRENCY,
+    assetId: assetIdForLegacyCurrency(FUNDING_CURRENCY),
+    moneyContractVersion: 2,
     network: env.FIBER_NETWORK,
     depositMode: 'vault',
     depositAddress: input.vault.address,
@@ -645,7 +665,10 @@ export async function createWalletFundingRequest(walletId: string, amount: numbe
     walletAddress: wallet.address,
     amount: fromMinorUnits(amountMinor, FUNDING_CURRENCY),
     amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(amountMinor),
     currency: FUNDING_CURRENCY,
+    assetId: assetIdForLegacyCurrency(FUNDING_CURRENCY),
+    moneyContractVersion: 2,
     network: config.network,
     depositMode: config.depositMode,
     depositAddress: config.depositAddress,

@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AUTOMATION_AUDIT_ACTIONS, type PaymentBatchStatus } from '../domain/automation.js';
+import { assetIdForLegacyCurrency, PAYMENT_CONTRACT_VERSION } from '../domain/payment.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../lib/errors.js';
-import { fallbackMinorUnits, fromMinorUnits, toMinorUnits } from '../lib/money.js';
+import { fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount, toMinorUnits } from '../lib/money.js';
 import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { AppModel, type AppRecord } from '../models/app.model.js';
 import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel, type InvoiceRecord, type PaymentBatchRecord, type PaymentJobRecord, type RecipientRecord } from '../models/automation.model.js';
@@ -78,6 +79,7 @@ export interface RecipientDto {
 }
 
 export interface InvoiceDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   appId: string;
   sessionId: string;
@@ -85,7 +87,9 @@ export interface InvoiceDto {
   batchId?: string;
   amount: number;
   amountMinor: number;
+  amountAtomic: string;
   currency: string;
+  assetId: string;
   status: string;
   type: string;
   description: string;
@@ -110,6 +114,7 @@ export interface InvoiceDto {
 }
 
 export interface PaymentJobDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   appId: string;
   sessionId: string;
@@ -118,7 +123,9 @@ export interface PaymentJobDto {
   batchId?: string;
   amount: number;
   amountMinor: number;
+  amountAtomic: string;
   currency: string;
+  assetId: string;
   status: string;
   attempts: number;
   maxAttempts: number;
@@ -136,6 +143,7 @@ export interface PaymentJobDto {
 }
 
 export interface PaymentBatchDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   appId: string;
   sessionId: string;
@@ -145,7 +153,9 @@ export interface PaymentBatchDto {
   idempotencyKey?: string;
   totalAmount: number;
   totalAmountMinor: number;
+  totalAmountAtomic: string;
   currency: string;
+  assetId: string;
   invoiceCount: number;
   paidCount: number;
   failedCount: number;
@@ -231,6 +241,7 @@ function toRecipientDto(record: RecipientRecord & { createdAt?: Date; updatedAt?
 
 function toInvoiceDto(record: InvoiceRecord & { createdAt?: Date; updatedAt?: Date }): InvoiceDto {
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: record.invoiceId,
     appId: record.appId,
     sessionId: record.sessionId,
@@ -238,7 +249,9 @@ function toInvoiceDto(record: InvoiceRecord & { createdAt?: Date; updatedAt?: Da
     batchId: record.batchId ?? undefined,
     amount: fromMinorUnits(record.amountMinor, record.currency),
     amountMinor: record.amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(record.amountMinor),
     currency: record.currency,
+    assetId: assetIdForLegacyCurrency(record.currency),
     status: record.status,
     type: record.type ?? 'Invoice payment',
     description: record.description ?? '',
@@ -268,6 +281,7 @@ function toPaymentBatchDto(
   invoices: InvoiceDto[] = []
 ): PaymentBatchDto {
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: record.batchId,
     appId: record.appId,
     sessionId: record.sessionId,
@@ -277,7 +291,9 @@ function toPaymentBatchDto(
     idempotencyKey: record.idempotencyKey ?? undefined,
     totalAmount: fromMinorUnits(record.totalAmountMinor, record.currency),
     totalAmountMinor: record.totalAmountMinor,
+    totalAmountAtomic: legacyMinorToAtomicAmount(record.totalAmountMinor),
     currency: record.currency,
+    assetId: assetIdForLegacyCurrency(record.currency),
     invoiceCount: record.invoiceCount,
     paidCount: record.paidCount,
     failedCount: record.failedCount,
@@ -298,6 +314,7 @@ function toPaymentBatchDto(
 
 function toPaymentJobDto(record: PaymentJobRecord & { createdAt?: Date; updatedAt?: Date }): PaymentJobDto {
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: record.jobId,
     appId: record.appId,
     sessionId: record.sessionId,
@@ -306,7 +323,9 @@ function toPaymentJobDto(record: PaymentJobRecord & { createdAt?: Date; updatedA
     batchId: record.batchId ?? undefined,
     amount: fromMinorUnits(record.amountMinor, record.currency),
     amountMinor: record.amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(record.amountMinor),
     currency: record.currency,
+    assetId: assetIdForLegacyCurrency(record.currency),
     status: record.status,
     attempts: record.attempts,
     maxAttempts: record.maxAttempts,
@@ -503,7 +522,10 @@ function buildInvoiceRecord(input: {
     batchId: input.batchId,
     amount: fromMinorUnits(input.amountMinor, input.currency),
     amountMinor: input.amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(input.amountMinor),
     currency: input.currency,
+    assetId: assetIdForLegacyCurrency(input.currency),
+    moneyContractVersion: 2,
     status: 'draft',
     type: cleanOptionalString(input.invoice.type) ?? 'Invoice payment',
     description: cleanOptionalString(input.invoice.description) ?? '',
@@ -691,7 +713,10 @@ async function createOrResetPaymentJob(actor: AutomationActor, invoice: InvoiceD
         batchId: invoice.batchId,
         amount: fromMinorUnits(invoice.amountMinor, invoice.currency),
         amountMinor: invoice.amountMinor,
+        amountAtomic: legacyMinorToAtomicAmount(invoice.amountMinor),
         currency: invoice.currency,
+        assetId: assetIdForLegacyCurrency(invoice.currency),
+        moneyContractVersion: 2,
         status: 'queued',
         idempotencyKey: paymentJobIdempotencyKey(invoice.toObject()),
         runAfter,
@@ -1244,7 +1269,10 @@ export async function createInvoiceBatch(actor: AutomationActor, input: CreateIn
     idempotencyKey: cleanOptionalString(input.idempotencyKey),
     totalAmount: fromMinorUnits(totalAmountMinor, session.currency),
     totalAmountMinor,
+    totalAmountAtomic: legacyMinorToAtomicAmount(totalAmountMinor),
     currency: session.currency,
+    assetId: assetIdForLegacyCurrency(session.currency),
+    moneyContractVersion: 2,
     invoiceCount: invoiceRecords.length,
     paidCount: 0,
     failedCount: 0,
@@ -1370,4 +1398,3 @@ export async function runPaymentWorkerOnce(options: RunPaymentWorkerOptions = {}
 
   return result;
 }
-

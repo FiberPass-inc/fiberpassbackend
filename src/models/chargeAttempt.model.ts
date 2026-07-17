@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { assetIdField, atomicAmountField, moneyContractVersionField } from './moneyFields.js';
 
 export const CHARGE_ATTEMPT_STATUSES = ['pending', 'uncertain', 'succeeded', 'failed'] as const;
 export type ChargeAttemptStatus = (typeof CHARGE_ATTEMPT_STATUSES)[number];
@@ -21,7 +22,10 @@ const chargeAttemptSchema = new Schema(
     serviceReference: { type: String, trim: true },
     amount: { type: Number, required: true, min: 0 },
     amountMinor: { type: Number, min: 0 },
+    amountAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: 'CKB' },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     type: { type: String, required: true, trim: true },
     status: { type: String, enum: CHARGE_ATTEMPT_STATUSES, required: true, default: 'pending', index: true },
     reserveStatus: { type: String, enum: CHARGE_RESERVE_STATUSES, required: true, default: 'reserved', index: true },
@@ -29,8 +33,10 @@ const chargeAttemptSchema = new Schema(
     failureMessage: { type: String, trim: true },
     resultingSpent: { type: Number, min: 0 },
     resultingSpentMinor: { type: Number, min: 0 },
+    resultingSpentAtomic: atomicAmountField(),
     remainingBalance: { type: Number, min: 0 },
     remainingBalanceMinor: { type: Number, min: 0 },
+    remainingBalanceAtomic: atomicAmountField(),
     provider: { type: String, trim: true },
     network: { type: String, trim: true },
     proofId: { type: String, trim: true },

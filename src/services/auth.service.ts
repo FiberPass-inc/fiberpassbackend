@@ -2,8 +2,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { config as lumosConfig, helpers } from '@ckb-lumos/lumos';
 import { verifyCredential, verifySignature, type SignChallengeResponseData } from '@joyid/ckb';
 import { env } from '../config/env.js';
+import { assetIdForLegacyCurrency, PAYMENT_CONTRACT_VERSION } from '../domain/payment.js';
 import { ApiError } from '../lib/errors.js';
-import { fallbackMinorUnits, fromMinorUnits } from '../lib/money.js';
+import { fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount } from '../lib/money.js';
 import { AppApiKeyModel, AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
@@ -209,14 +210,18 @@ async function recoverLegacyJoyIdWallet(input: {
 }
 
 function walletDto(input: { connected?: boolean; address: string; balance: number; balanceMinor?: number | null; currency: string }): WalletDto {
+  const balanceMinor = balanceMinorForWallet(input);
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     connected: input.connected ?? true,
     address: input.address,
     authProvider: 'joyid',
     addressType: 'ckb',
     balance: input.balance,
-    balanceMinor: balanceMinorForWallet(input),
-    currency: input.currency
+    balanceMinor,
+    balanceAtomic: legacyMinorToAtomicAmount(balanceMinor),
+    currency: input.currency,
+    assetId: assetIdForLegacyCurrency(input.currency)
   };
 }
 

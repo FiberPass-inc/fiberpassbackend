@@ -1,11 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { env } from '../config/env.js';
+import { assetIdForLegacyCurrency, PAYMENT_CONTRACT_VERSION } from '../domain/payment.js';
 import { ckbTransactionExplorerUrl } from '../lib/ckbExplorer.js';
 import { listLiveVaultCells } from './ckbChain.service.js';
 import { ApiError } from '../lib/errors.js';
 import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { liveEvents } from '../lib/liveEvents.js';
-import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, roundMoney, toMinorUnits } from '../lib/money.js';
+import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount, roundMoney, toMinorUnits } from '../lib/money.js';
 import { AppModel, type AppRecord } from '../models/app.model.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
 import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionLifecycleProviderStatus, type SessionLifecycleState, type SessionRecord, type SessionStatus } from '../models/session.model.js';
@@ -106,6 +107,7 @@ interface TransactionLogDto {
   timestamp: string;
   amount: number;
   amountMinor: number;
+  amountAtomic: string;
 }
 
 export interface RecipientWalletDto {
@@ -115,6 +117,7 @@ export interface RecipientWalletDto {
   recipientTimeZone?: string;
   amount?: number;
   amountMinor?: number;
+  amountAtomic?: string;
   fiberInvoice?: string;
   status?: 'awaiting_details' | 'pending' | 'processing' | 'paid' | 'failed';
   chargeAttemptId?: string;
@@ -155,12 +158,15 @@ export interface RecipientWalletDto {
 }
 
 export interface ChargeAttemptDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   sessionId: string;
   appId?: string;
   apiKeyId?: string;
   amount: number;
   amountMinor: number;
+  amountAtomic: string;
+  assetId: string;
   currency: string;
   type: string;
   status: string;
@@ -168,8 +174,10 @@ export interface ChargeAttemptDto {
   failureMessage?: string;
   resultingSpent?: number;
   resultingSpentMinor?: number;
+  resultingSpentAtomic?: string;
   remainingBalance?: number;
   remainingBalanceMinor?: number;
+  remainingBalanceAtomic?: string;
   provider?: string;
   network?: string;
   providerStatus?: string;
@@ -240,6 +248,7 @@ interface SessionLike {
 }
 
 export interface SessionDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   id: string;
   name: string;
   serviceAddress: string;
@@ -259,21 +268,29 @@ export interface SessionDto {
   nextReleaseAt?: string;
   maxChargeAmount?: number;
   maxChargeAmountMinor?: number;
+  maxChargeAmountAtomic?: string;
   conditionSummary?: string;
   expiryAt?: string;
   platformFeeEstimate?: number;
   platformFeeEstimateMinor?: number;
+  platformFeeEstimateAtomic: string;
   networkFeeEstimate?: number;
   networkFeeEstimateMinor?: number;
+  networkFeeEstimateAtomic: string;
   spent: number;
   spentMinor: number;
+  spentAtomic: string;
   reservedBalance: number;
   reservedBalanceMinor: number;
+  reservedBalanceAtomic: string;
   limit: number;
   limitMinor: number;
+  limitAtomic: string;
   remainingBalance: number;
   remainingBalanceMinor: number;
+  remainingBalanceAtomic: string;
   currency: string;
+  assetId: string;
   duration: string;
   status: SessionStatus;
   iconType: IconType;
@@ -294,16 +311,20 @@ export interface SessionDto {
 }
 
 export interface WalletDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   connected: boolean;
   address: string;
   authProvider: 'joyid';
   addressType: 'ckb';
   balance: number;
   balanceMinor: number;
+  balanceAtomic: string;
   currency: string;
+  assetId: string;
 }
 
 export interface SessionsOverviewDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   wallet: WalletDto;
   activeSessions: SessionDto[];
   historySessions: SessionDto[];
@@ -360,12 +381,16 @@ export interface GrantSessionAppInput {
 }
 
 export interface CreateSessionPolicyDto {
+  contractVersion: typeof PAYMENT_CONTRACT_VERSION;
   limits: {
     min: number;
     minMinor: number;
+    minAtomic: string;
     max: number;
     maxMinor: number;
+    maxAtomic: string;
     currency: string;
+    assetId: string;
   };
   expiry: {
     minMinutes: number;
@@ -375,8 +400,10 @@ export interface CreateSessionPolicyDto {
     platformFeeBps: number;
     minPlatformFee: number;
     minPlatformFeeMinor: number;
+    minPlatformFeeAtomic: string;
     estimatedNetworkFee: number;
     estimatedNetworkFeeMinor: number;
+    estimatedNetworkFeeAtomic: string;
   };
   fiber: {
     provider: string;
@@ -405,7 +432,8 @@ function newLog(type: string, amountMinor = 0, currency: string = CREATE_SESSION
     type,
     timestamp: utcTimeLabel(),
     amount: fromMinorUnits(amountMinor, currency),
-    amountMinor
+    amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(amountMinor)
   };
 }
 
@@ -439,12 +467,15 @@ function toChargeAttemptDto(attempt: ChargeAttemptLike): ChargeAttemptDto {
     : attempt.remainingBalanceMinor;
 
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: attempt.attemptId,
     sessionId: attempt.sessionId,
     appId: attempt.appId ?? undefined,
     apiKeyId: attempt.apiKeyId ?? undefined,
     amount: fromMinorUnits(amountMinor, attempt.currency),
     amountMinor,
+    amountAtomic: legacyMinorToAtomicAmount(amountMinor),
+    assetId: assetIdForLegacyCurrency(attempt.currency),
     currency: attempt.currency,
     type: attempt.type,
     status: attempt.status,
@@ -452,8 +483,10 @@ function toChargeAttemptDto(attempt: ChargeAttemptLike): ChargeAttemptDto {
     failureMessage: attempt.failureMessage ?? undefined,
     resultingSpent: resultingSpentMinor == null ? undefined : fromMinorUnits(resultingSpentMinor, attempt.currency),
     resultingSpentMinor,
+    resultingSpentAtomic: resultingSpentMinor == null ? undefined : legacyMinorToAtomicAmount(resultingSpentMinor),
     remainingBalance: remainingBalanceMinor == null ? undefined : fromMinorUnits(remainingBalanceMinor, attempt.currency),
     remainingBalanceMinor,
+    remainingBalanceAtomic: remainingBalanceMinor == null ? undefined : legacyMinorToAtomicAmount(remainingBalanceMinor),
     provider: attempt.provider ?? undefined,
     network: attempt.network ?? undefined,
     providerStatus: attempt.providerStatus ?? undefined,
@@ -479,6 +512,7 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
   const networkFeeEstimateMinor = fallbackMinorUnits(session.networkFeeEstimateMinor, session.networkFeeEstimate ?? 0, session.currency);
 
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     id: session.publicId,
     name: session.name,
     serviceAddress: session.serviceAddress,
@@ -492,27 +526,46 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
     paymentPurpose: session.paymentPurpose ?? 'app_session',
     recipientName: session.recipientName,
     recipientAddress: session.recipientAddress,
-    recipientWallets: (session.recipientWallets ?? []).map((wallet) => toSafeRecipientWallet(wallet as RecipientWalletDto)),
+    recipientWallets: (session.recipientWallets ?? []).map((wallet) => {
+      const safeWallet = toSafeRecipientWallet(wallet as RecipientWalletDto);
+      const amountMinor = safeWallet.amountMinor == null && safeWallet.amount == null
+        ? undefined
+        : fallbackMinorUnits(safeWallet.amountMinor, safeWallet.amount, session.currency);
+      return {
+        ...safeWallet,
+        amountAtomic: amountMinor == null ? undefined : legacyMinorToAtomicAmount(amountMinor)
+      };
+    }),
     paymentReference: session.paymentReference,
     releaseCadence: session.releaseCadence ?? 'none',
     nextReleaseAt: session.nextReleaseAt instanceof Date ? session.nextReleaseAt.toISOString() : undefined,
     maxChargeAmount: session.maxChargeAmount,
     maxChargeAmountMinor: session.maxChargeAmountMinor,
+    maxChargeAmountAtomic: session.maxChargeAmountMinor == null
+      ? session.maxChargeAmount == null ? undefined : legacyMinorToAtomicAmount(toMinorUnits(String(session.maxChargeAmount), session.currency))
+      : legacyMinorToAtomicAmount(session.maxChargeAmountMinor),
     conditionSummary: session.conditionSummary,
     expiryAt: session.expiryAt instanceof Date ? session.expiryAt.toISOString() : session.expiryAt,
     platformFeeEstimate: fromMinorUnits(platformFeeEstimateMinor, session.currency),
     platformFeeEstimateMinor,
+    platformFeeEstimateAtomic: legacyMinorToAtomicAmount(platformFeeEstimateMinor),
     networkFeeEstimate: fromMinorUnits(networkFeeEstimateMinor, session.currency),
     networkFeeEstimateMinor,
+    networkFeeEstimateAtomic: legacyMinorToAtomicAmount(networkFeeEstimateMinor),
     spent: fromMinorUnits(spentMinor, session.currency),
     spentMinor,
+    spentAtomic: legacyMinorToAtomicAmount(spentMinor),
     reservedBalance: fromMinorUnits(reservedMinor, session.currency),
     reservedBalanceMinor: reservedMinor,
+    reservedBalanceAtomic: legacyMinorToAtomicAmount(reservedMinor),
     limit: fromMinorUnits(limitMinor, session.currency),
     limitMinor,
+    limitAtomic: legacyMinorToAtomicAmount(limitMinor),
     remainingBalance: fromMinorUnits(remainingBalanceMinor, session.currency),
     remainingBalanceMinor,
+    remainingBalanceAtomic: legacyMinorToAtomicAmount(remainingBalanceMinor),
     currency: session.currency,
+    assetId: assetIdForLegacyCurrency(session.currency),
     duration: session.duration,
     status: session.status,
     iconType: session.iconType,
@@ -531,7 +584,8 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
     logs: (session.logs ?? []).map((log) => ({
       ...log,
       amountMinor: fallbackMinorUnits(log.amountMinor, log.amount, session.currency),
-      amount: fromMinorUnits(fallbackMinorUnits(log.amountMinor, log.amount, session.currency), session.currency)
+      amount: fromMinorUnits(fallbackMinorUnits(log.amountMinor, log.amount, session.currency), session.currency),
+      amountAtomic: legacyMinorToAtomicAmount(fallbackMinorUnits(log.amountMinor, log.amount, session.currency))
     })),
     chargeAttempts
   };
@@ -540,13 +594,16 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
 function toWalletDto(wallet: WalletRecord): WalletDto {
   const balanceMinor = walletBalanceMinor(wallet);
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     connected: wallet.connected,
     address: wallet.address,
     authProvider: 'joyid',
     addressType: 'ckb',
     balance: fromMinorUnits(balanceMinor, wallet.currency),
     balanceMinor,
-    currency: wallet.currency
+    balanceAtomic: legacyMinorToAtomicAmount(balanceMinor),
+    currency: wallet.currency,
+    assetId: assetIdForLegacyCurrency(wallet.currency)
   };
 }
 
@@ -560,12 +617,16 @@ export async function getCreateSessionPolicy(walletId: string): Promise<CreateSe
     status: 'active'
   }).sort({ createdAt: -1 }).lean<AppRecord[]>();
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     limits: {
       min: CREATE_SESSION_POLICY.minLimit,
       minMinor: toMinorUnits(String(CREATE_SESSION_POLICY.minLimit), CREATE_SESSION_POLICY.currency),
+      minAtomic: legacyMinorToAtomicAmount(toMinorUnits(String(CREATE_SESSION_POLICY.minLimit), CREATE_SESSION_POLICY.currency)),
       max: CREATE_SESSION_POLICY.maxLimit,
       maxMinor: toMinorUnits(String(CREATE_SESSION_POLICY.maxLimit), CREATE_SESSION_POLICY.currency),
-      currency: CREATE_SESSION_POLICY.currency
+      maxAtomic: legacyMinorToAtomicAmount(toMinorUnits(String(CREATE_SESSION_POLICY.maxLimit), CREATE_SESSION_POLICY.currency)),
+      currency: CREATE_SESSION_POLICY.currency,
+      assetId: assetIdForLegacyCurrency(CREATE_SESSION_POLICY.currency)
     },
     expiry: {
       minMinutes: CREATE_SESSION_POLICY.minExpiryMinutes,
@@ -575,8 +636,10 @@ export async function getCreateSessionPolicy(walletId: string): Promise<CreateSe
       platformFeeBps: CREATE_SESSION_POLICY.platformFeeBps,
       minPlatformFee: CREATE_SESSION_POLICY.minPlatformFee,
       minPlatformFeeMinor: toMinorUnits(String(CREATE_SESSION_POLICY.minPlatformFee), CREATE_SESSION_POLICY.currency),
+      minPlatformFeeAtomic: legacyMinorToAtomicAmount(toMinorUnits(String(CREATE_SESSION_POLICY.minPlatformFee), CREATE_SESSION_POLICY.currency)),
       estimatedNetworkFee: CREATE_SESSION_POLICY.estimatedNetworkFee,
-      estimatedNetworkFeeMinor: toMinorUnits(String(CREATE_SESSION_POLICY.estimatedNetworkFee), CREATE_SESSION_POLICY.currency)
+      estimatedNetworkFeeMinor: toMinorUnits(String(CREATE_SESSION_POLICY.estimatedNetworkFee), CREATE_SESSION_POLICY.currency),
+      estimatedNetworkFeeAtomic: legacyMinorToAtomicAmount(toMinorUnits(String(CREATE_SESSION_POLICY.estimatedNetworkFee), CREATE_SESSION_POLICY.currency))
     },
     fiber: {
       provider: fiberProvider.kind,
@@ -1302,6 +1365,9 @@ export async function reconcileWalletBalanceWithCurrentVault(walletId: string): 
       $set: {
         currency: CREATE_SESSION_POLICY.currency,
         balanceMinor: availableMinor,
+        balanceAtomic: legacyMinorToAtomicAmount(availableMinor),
+        assetId: assetIdForLegacyCurrency(CREATE_SESSION_POLICY.currency),
+        moneyContractVersion: 2,
         balance: fromMinorUnits(availableMinor, CREATE_SESSION_POLICY.currency)
       }
     }
@@ -1315,6 +1381,7 @@ async function ensureWalletMoneyFields(walletId: string): Promise<void> {
   if (wallet.balanceMinor !== balanceMinor || wallet.balance !== fromMinorUnits(balanceMinor, wallet.currency)) {
     wallet.balanceMinor = balanceMinor;
     wallet.balance = fromMinorUnits(balanceMinor, wallet.currency);
+    wallet.balanceAtomic = legacyMinorToAtomicAmount(balanceMinor);
     await wallet.save();
   }
 }
@@ -1335,6 +1402,7 @@ async function resetUntouchedLegacyPlaceholderBalance(walletId: string): Promise
 
   wallet.balanceMinor = 0;
   wallet.balance = 0;
+  wallet.balanceAtomic = legacyMinorToAtomicAmount(0);
   await wallet.save();
 }
 
@@ -1348,7 +1416,10 @@ export async function ensureWalletForAddress(address: string): Promise<WalletRec
         walletId,
         balance: 0,
         balanceMinor: 0,
-        currency: CREATE_SESSION_POLICY.currency
+        balanceAtomic: legacyMinorToAtomicAmount(0),
+        currency: CREATE_SESSION_POLICY.currency,
+        assetId: assetIdForLegacyCurrency(CREATE_SESSION_POLICY.currency),
+        moneyContractVersion: 2
       }
     },
     { upsert: true, new: true }
@@ -1473,6 +1544,7 @@ export async function getSessionsOverview(walletId: string): Promise<SessionsOve
 
   const sessionDtos = sessions.map((session) => toSessionDto(session, attemptsBySession.get(session.publicId) ?? []));
   return {
+    contractVersion: PAYMENT_CONTRACT_VERSION,
     wallet: toWalletDto(wallet.toObject()),
     activeSessions: sessionDtos.filter((session) => OPEN_STATUSES.includes(session.status)),
     historySessions: sessionDtos.filter((session) => HISTORY_STATUSES.includes(session.status))
@@ -1581,17 +1653,26 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       nextReleaseAt,
       maxChargeAmount,
       maxChargeAmountMinor,
+      maxChargeAmountAtomic: maxChargeAmountMinor == null ? undefined : legacyMinorToAtomicAmount(maxChargeAmountMinor),
       conditionSummary,
       expiryAt,
       platformFeeEstimate: fromMinorUnits(platformFeeEstimateMinor, input.currency),
       platformFeeEstimateMinor,
+      platformFeeEstimateAtomic: legacyMinorToAtomicAmount(platformFeeEstimateMinor),
       networkFeeEstimate: fromMinorUnits(networkFeeEstimateMinor, input.currency),
       networkFeeEstimateMinor,
+      networkFeeEstimateAtomic: legacyMinorToAtomicAmount(networkFeeEstimateMinor),
       spent: 0,
       spentMinor: 0,
+      spentAtomic: legacyMinorToAtomicAmount(0),
+      reservedMinor: 0,
+      reservedAtomic: legacyMinorToAtomicAmount(0),
       limit,
       limitMinor,
+      limitAtomic: legacyMinorToAtomicAmount(limitMinor),
       currency: input.currency,
+      assetId: assetIdForLegacyCurrency(input.currency),
+      moneyContractVersion: 2,
       duration: input.duration,
       status: 'active',
       iconType: registeredApp ? 'code' : input.iconType,

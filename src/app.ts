@@ -3,6 +3,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import mongoose from 'mongoose';
 import { ZodError } from 'zod';
 import { env, isProduction } from './config/env.js';
+import { PAYMENT_CONTRACT_VERSION } from './domain/payment.js';
 import { ApiError } from './lib/errors.js';
 import { logger } from './lib/logger.js';
 import { createRateLimitMiddleware } from './middleware/rateLimit.middleware.js';
@@ -71,14 +72,26 @@ app.use(securityHeaders);
 app.use(cors({
   origin: parseCorsOrigin(env.FRONTEND_ORIGIN),
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'Last-Event-ID']
+  allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'Last-Event-ID'],
+  exposedHeaders: ['X-FiberPass-Contract-Version']
 }));
 app.use(express.json({ limit: env.REQUEST_BODY_LIMIT }));
 
-function sendMeta(_request: Request, response: Response): void {
+app.use((request, response, next) => {
+  response.setHeader('X-FiberPass-Contract-Version', request.path.startsWith('/v2') ? PAYMENT_CONTRACT_VERSION : '1.0');
+  next();
+});
+
+function sendMeta(request: Request, response: Response): void {
   response.json({
     service: 'fiberpass-api',
     mode: 'product',
+    contractVersion: request.originalUrl.startsWith('/v2') ? PAYMENT_CONTRACT_VERSION : '1.0',
+    paymentContracts: {
+      current: PAYMENT_CONTRACT_VERSION,
+      amounts: 'canonical-atomic-unit-strings',
+      legacyV1Projection: 'non-negative-safe-integer-minor-units'
+    },
     fiber: {
       provider: env.FIBER_PROVIDER,
       network: env.FIBER_NETWORK,
@@ -150,8 +163,10 @@ app.use(createRateLimitMiddleware({ windowMs: env.RATE_LIMIT_WINDOW_MS, max: env
 
 app.get('/meta', sendMeta);
 app.get('/v1/meta', sendMeta);
+app.get('/v2/meta', sendMeta);
 app.use(fiberRouter);
 app.use('/v1', fiberRouter);
+app.use('/v2', fiberRouter);
 
 app.post('/cron/payment-worker', async (request, response, next) => {
   try {
@@ -173,6 +188,10 @@ app.use('/v1', authRouter);
 app.use('/v1', appsRouter);
 app.use('/v1', sessionsRouter);
 app.use('/v1', walletRouter);
+app.use('/v2', authRouter);
+app.use('/v2', appsRouter);
+app.use('/v2', sessionsRouter);
+app.use('/v2', walletRouter);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (error instanceof ZodError) {

@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { assetIdField, atomicAmountField, moneyContractVersionField } from './moneyFields.js';
 
 export const SESSION_STATUSES = ['active', 'paused', 'settled', 'revoked', 'expired'] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -27,7 +28,8 @@ const transactionLogSchema = new Schema(
     type: { type: String, required: true },
     timestamp: { type: String, required: true },
     amount: { type: Number, required: true, min: 0 },
-    amountMinor: { type: Number, min: 0 }
+    amountMinor: { type: Number, min: 0 },
+    amountAtomic: atomicAmountField()
   },
   { _id: false }
 );
@@ -40,6 +42,7 @@ const recipientWalletSchema = new Schema(
     recipientTimeZone: { type: String, trim: true },
     amount: { type: Number, min: 0 },
     amountMinor: { type: Number, min: 1 },
+    amountAtomic: atomicAmountField(),
     fiberInvoice: { type: String, trim: true },
     status: { type: String, enum: ['awaiting_details', 'pending', 'processing', 'paid', 'failed'], default: 'pending' },
     inviteStatus: { type: String, enum: ['not_required', 'pending', 'sent', 'claimed', 'expired', 'send_failed'], default: 'not_required' },
@@ -57,14 +60,17 @@ const recipientWalletSchema = new Schema(
     payoutExplorerUrl: { type: String, trim: true },
     fiberLiquidityBridgeTxHash: { type: String, trim: true },
     fiberLiquidityBridgeAmountMinor: { type: Number, min: 1 },
+    fiberLiquidityBridgeAmountAtomic: atomicAmountField(),
     fiberLiquidityBridgeStatus: { type: String, trim: true },
     fiberLiquidityBridgeCreatedAt: { type: Date },
     fiberLiquidityBridgeTopUpTxHash: { type: String, trim: true },
     fiberLiquidityBridgeTopUpAmountMinor: { type: Number, min: 1 },
+    fiberLiquidityBridgeTopUpAmountAtomic: atomicAmountField(),
     fiberLiquidityBridgeTopUpStatus: { type: String, trim: true },
     fiberLiquidityBridgeTopUpCreatedAt: { type: Date },
     fiberChannelOpenProofId: { type: String, trim: true },
     fiberChannelOpenAmountMinor: { type: Number, min: 1 },
+    fiberChannelOpenAmountAtomic: atomicAmountField(),
     fiberChannelOpenRequestedAt: { type: Date },
     fiberExitInvoice: { type: String, trim: true },
     fiberExitInvoiceHash: { type: String, trim: true },
@@ -103,18 +109,26 @@ const sessionSchema = new Schema(
     nextReleaseAt: { type: Date, index: true },
     maxChargeAmount: { type: Number, min: 0 },
     maxChargeAmountMinor: { type: Number, min: 0 },
+    maxChargeAmountAtomic: atomicAmountField(),
     conditionSummary: { type: String, trim: true },
     expiryAt: { type: Date },
     platformFeeEstimate: { type: Number, min: 0, default: 0 },
     platformFeeEstimateMinor: { type: Number, min: 0, default: 0 },
+    platformFeeEstimateAtomic: atomicAmountField(),
     networkFeeEstimate: { type: Number, min: 0, default: 0 },
     networkFeeEstimateMinor: { type: Number, min: 0, default: 0 },
+    networkFeeEstimateAtomic: atomicAmountField(),
     spent: { type: Number, required: true, min: 0, default: 0 },
     spentMinor: { type: Number, min: 0, default: 0 },
+    spentAtomic: atomicAmountField(),
     reservedMinor: { type: Number, min: 0, default: 0 },
+    reservedAtomic: atomicAmountField(),
     limit: { type: Number, required: true, min: 0.01 },
     limitMinor: { type: Number, min: 1 },
+    limitAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: 'CKB' },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     duration: { type: String, required: true },
     status: { type: String, enum: SESSION_STATUSES, required: true, default: 'active', index: true },
     iconType: { type: String, enum: ICON_TYPES, required: true, default: 'rpc' },
@@ -128,6 +142,7 @@ const sessionSchema = new Schema(
     lifecycleOperationId: { type: String, trim: true },
     lifecycleIdempotencyKey: { type: String, trim: true },
     lifecycleAmountMinor: { type: Number, min: 0 },
+    lifecycleAmountAtomic: atomicAmountField(),
     lifecycleProviderStatus: { type: String, enum: SESSION_LIFECYCLE_PROVIDER_STATUSES },
     lifecycleProvider: { type: String, trim: true },
     lifecycleNetwork: { type: String, trim: true },

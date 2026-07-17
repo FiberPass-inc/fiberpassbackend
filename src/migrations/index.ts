@@ -17,6 +17,7 @@ import { WebhookDeliveryModel } from '../models/webhookDelivery.model.js';
 import { WorkerHeartbeatModel } from '../models/workerHeartbeat.model.js';
 import { WorkerLeaseModel } from '../models/workerLease.model.js';
 import { encryptWebhookSecret } from '../services/webhookSecurity.service.js';
+import { migrateLegacyMoneyToAtomicStrings } from './atomicMoney.js';
 
 export interface MigrationDefinition {
   id: string;
@@ -105,8 +106,17 @@ const createSecurityControlIndexes: MigrationDefinition = {
   }
 };
 
+const migrateAtomicMoneyContracts: MigrationDefinition = {
+  id: '004-migrate-atomic-money-contracts',
+  description: 'Add exact atomic-unit strings and asset ids to legacy CKB money records.',
+  async up() {
+    await migrateLegacyMoneyToAtomicStrings();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
-  createSecurityControlIndexes
+  createSecurityControlIndexes,
+  migrateAtomicMoneyContracts
 ];

@@ -1,6 +1,11 @@
 # Automation API Reference
 
-All endpoints are available both at the root path and under `/v1`. Wallet endpoints require a JoyID-authenticated bearer token. App automation endpoints require `x-fiberpass-api-key` or app bearer auth with the listed scopes.
+All endpoints are available at the root path, under `/v1` for legacy numeric
+compatibility, and under `/v2` for the additive exact atomic-unit contract.
+Wallet endpoints require a JoyID-authenticated bearer token. App automation
+endpoints require `x-fiberpass-api-key` or app bearer auth with the listed
+scopes. New clients must use `amountAtomic`, `totalAmountAtomic`, and `assetId`
+instead of numeric minor-unit fields.
 
 ## Wallet Developer Endpoints
 
