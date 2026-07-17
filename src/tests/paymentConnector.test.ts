@@ -30,7 +30,7 @@ function intent(overrides: Partial<PaymentIntent> = {}): PaymentIntent {
 }
 
 class FakeConnector implements PaymentConnector {
-  readonly id = 'fake';
+  readonly id: string = 'fake';
 
   capabilities() {
     return [{
@@ -90,10 +90,24 @@ class FakeConnector implements PaymentConnector {
   }
 }
 
+class AlternateFakeConnector extends FakeConnector {
+  override readonly id = 'fake-alternate';
+}
+
 const registry = new PaymentConnectorRegistry();
 const fake = new FakeConnector();
 registry.register(fake);
 assert.equal(registry.require({ rail: 'lightning', network: 'REGTEST', assetId: asAssetId('bitcoin:btc') }), fake);
+const alternate = new AlternateFakeConnector();
+registry.register(alternate);
+assert.equal(registry.require({
+  rail: 'lightning',
+  network: 'regtest',
+  assetId: asAssetId('bitcoin:btc'),
+  connectorId: alternate.id
+}), alternate);
+assert.equal(registry.require({ rail: 'lightning', network: 'regtest', assetId: asAssetId('bitcoin:btc') }), fake);
+assert.equal(registry.capabilities().filter((capability) => capability.rail === 'lightning').length, 2);
 assert.equal(registry.capabilities()[0].connectorId, 'fake');
 assert.throws(
   () => registry.require({ rail: 'bitcoin_onchain', network: 'regtest', assetId: asAssetId('bitcoin:btc') }),

@@ -6,6 +6,7 @@ export interface ConnectorSelector {
   rail: PaymentRail;
   network: string;
   assetId: AssetId;
+  connectorId?: string;
 }
 
 function capabilityKey(selector: ConnectorSelector): string {
@@ -14,7 +15,7 @@ function capabilityKey(selector: ConnectorSelector): string {
 
 export class PaymentConnectorRegistry {
   private readonly connectors = new Map<string, PaymentConnector>();
-  private readonly capabilityOwners = new Map<string, PaymentConnector>();
+  private readonly capabilityOwners = new Map<string, Map<string, PaymentConnector>>();
 
   register(connector: PaymentConnector): void {
     if (this.connectors.has(connector.id)) {
@@ -28,20 +29,23 @@ export class PaymentConnectorRegistry {
         throw new Error('Connector capability id does not match its connector.');
       }
       const key = capabilityKey(capability);
-      if (this.capabilityOwners.has(key)) {
-        throw new Error('Payment capability is already registered: ' + key);
-      }
       if (registrations.some((registration) => registration.key === key)) {
         throw new Error('Payment connector declares a duplicate capability: ' + key);
       }
       registrations.push({ key, connector });
     }
-    for (const registration of registrations) this.capabilityOwners.set(registration.key, registration.connector);
+    for (const registration of registrations) {
+      const owners = this.capabilityOwners.get(registration.key) ?? new Map<string, PaymentConnector>();
+      owners.set(connector.id, registration.connector);
+      this.capabilityOwners.set(registration.key, owners);
+    }
     this.connectors.set(connector.id, connector);
   }
 
   find(selector: ConnectorSelector): PaymentConnector | undefined {
-    return this.capabilityOwners.get(capabilityKey(selector));
+    const owners = this.capabilityOwners.get(capabilityKey(selector));
+    if (selector.connectorId) return owners?.get(selector.connectorId);
+    return owners?.values().next().value;
   }
 
   require(selector: ConnectorSelector): PaymentConnector {
