@@ -24,6 +24,8 @@ is documented in
 [docs/grant-work-packages.md](docs/grant-work-packages.md).
 The exact atomic-unit API contract and v1 migration behavior are documented in
 [docs/api-money-contract-v2.md](docs/api-money-contract-v2.md).
+Connector selection, capability discovery, and provider error isolation are
+documented in [docs/payment-connectors.md](docs/payment-connectors.md).
 
 ## Stack
 
@@ -93,6 +95,7 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /wallet/funding/sync`
 - `POST /wallet/funding/:fundingId/confirm`
 - `GET /sessions/create-policy`
+- `GET /payment-connectors`
 - `GET /sessions`
 - `POST /events/ticket`
 - `GET /events?ticket=<short-lived-ticket>`

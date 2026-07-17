@@ -1,11 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
+import { fiberConnector } from '../connectors/index.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { ApiError } from '../lib/errors.js';
 import { getFiberChannelStrategy, openFiberTestChannel } from '../services/fiberChannel.service.js';
 import { runFiberLivePaymentTest } from '../services/fiberLiveTest.service.js';
-import { getFiberNodeReadiness } from '../services/fiberNode.service.js';
 
 export const fiberRouter = Router();
 
@@ -31,7 +31,7 @@ function requireFiberOperator(request: Request, _response: Response, next: NextF
   next();
 }
 
-export function publicFiberReadiness(readiness: Awaited<ReturnType<typeof getFiberNodeReadiness>>) {
+export function publicFiberReadiness(readiness: Awaited<ReturnType<typeof fiberConnector.getReadiness>>) {
   return {
     configured: readiness.configured,
     reachable: readiness.reachable,
@@ -44,11 +44,11 @@ export function publicFiberReadiness(readiness: Awaited<ReturnType<typeof getFib
 }
 
 fiberRouter.get('/fiber/node/status', requireFiberOperator, asyncHandler(async (_request, response) => {
-  response.json(await getFiberNodeReadiness());
+  response.json(await fiberConnector.getReadiness());
 }));
 
 fiberRouter.get('/fiber/node/readiness', asyncHandler(async (_request, response) => {
-  response.json(publicFiberReadiness(await getFiberNodeReadiness()));
+  response.json(publicFiberReadiness(await fiberConnector.getReadiness()));
 }));
 
 fiberRouter.get('/fiber/channels/strategy', requireFiberOperator, asyncHandler(async (_request, response) => {

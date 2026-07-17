@@ -57,6 +57,7 @@ export interface PaymentQuote {
   fee: MoneyValue;
   total: MoneyValue;
   expiresAt: string;
+  metadata?: Readonly<Record<string, string>>;
 }
 
 export interface PaymentResult {
