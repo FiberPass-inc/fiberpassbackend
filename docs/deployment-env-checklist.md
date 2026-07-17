@@ -65,6 +65,12 @@ Email notifications:
 
 ## Startup Protection
 
+Migration `010-create-metered-payment-models` must complete before API or
+payment workers accept metered grants. Payment workers need the same MongoDB
+replica set and connector credentials as scheduled payments because metered
+batches use durable transactions, leases, fresh-request resolution, and
+provider lookup.
+
 In `NODE_ENV=production`, backend config rejects:
 
 - wildcard frontend origin

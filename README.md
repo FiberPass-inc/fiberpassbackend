@@ -37,6 +37,9 @@ Bitcoin PSBT signing, RBF, and Core deployment are documented in
 Fresh-request schedules, calendar behavior, reusable resolver contracts,
 occurrence idempotency, and paused/revoked reconciliation are documented in
 [docs/scheduled-payments.md](docs/scheduled-payments.md).
+Metered usage grants, immutable event receipts, safe batching, restart
+reconciliation, and revocation behavior are documented in
+[docs/metered-payments.md](docs/metered-payments.md).
 Recipient identity, single-use destination claims, reusable destination rules,
 and privacy deletion are documented in
 [docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
@@ -167,6 +170,12 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /apps/:appId/invoice-batches`
 - `POST /apps/:appId/invoice-batches/:batchId/queue`
 - `GET /apps/:appId/payment-jobs`
+- `GET /apps/:appId/metered-grants`
+- `POST /apps/:appId/metered-grants`
+- `POST /apps/:appId/metered-grants/:grantId/revoke`
+- `POST /apps/:appId/usage-events`
+- `GET /apps/:appId/usage-events`
+- `GET /apps/:appId/metered-batches`
 - `GET /apps/:appId/charges`
 - `POST /apps/:appId/charges`
 
@@ -178,6 +187,7 @@ npm test
 npm run test:bitcoin
 npm run test:bitcoin-core-regtest
 npm run test:schedules
+npm run test:metered
 ```
 
 The existing Mongoose duplicate-index warning is non-blocking test output; build and test exit codes must remain zero.
