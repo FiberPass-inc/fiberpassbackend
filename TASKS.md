@@ -51,6 +51,7 @@ unambiguous licensing, contribution, security, custody, and terminology rules.
 
 - Add the intended repository license and ensure package metadata matches it.
 - Add contribution and vulnerability-reporting instructions.
+- Upgrade CI actions so they do not rely on a deprecated embedded Node runtime.
 - Add architecture decision records for wallet ownership, funding modes,
   connector isolation, atomic-unit money, optional email, and stablecoin scope.
 - Replace language that calls a contract vault a wallet.
@@ -65,6 +66,7 @@ unambiguous licensing, contribution, security, custody, and terminology rules.
 - [ ] Documentation identifies Bitcoin/Lightning grant deliverables separately
       from CKB and stablecoin work packages.
 - [ ] Documentation links resolve and contain no demo-only claims.
+- [ ] Organization CI completes without a deprecated Node runtime annotation.
 
 **Validation:** Markdown link check, package metadata check, secret scan, and
 documentation review by the non-implementing account.
