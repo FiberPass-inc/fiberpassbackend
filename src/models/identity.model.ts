@@ -7,6 +7,7 @@ import {
   DESTINATION_STATUSES,
   DESTINATION_VERIFICATION_METHODS,
   DESTINATION_VERIFICATION_SCOPES,
+  NOTIFICATION_ENDPOINT_STATUSES,
   PRINCIPAL_PROOF_TYPES
 } from '../domain/identity.js';
 
@@ -92,10 +93,21 @@ const notificationEndpointSchema = new Schema(
     purpose: { type: String, enum: ['receipt'], required: true, default: 'receipt' },
     value: { type: String, trim: true },
     valueHash: { type: String, trim: true, index: true },
-    status: { type: String, enum: ['active', 'deleted'], required: true, default: 'active' },
+    relayUrls: { type: [String], default: [] },
+    unsubscribeTokenHash: { type: String, trim: true, select: false },
+    unsubscribeCreatedAt: { type: Date },
+    status: { type: String, enum: NOTIFICATION_ENDPOINT_STATUSES, required: true, default: 'active' },
+    revokedAt: { type: Date },
+    unsubscribedAt: { type: Date },
     deletedAt: { type: Date }
   },
   { timestamps: true, versionKey: false }
+);
+
+notificationEndpointSchema.index({ ownerWalletId: 1, recipientId: 1, status: 1, createdAt: 1 });
+notificationEndpointSchema.index(
+  { unsubscribeTokenHash: 1 },
+  { unique: true, partialFilterExpression: { unsubscribeTokenHash: { $type: 'string' } } }
 );
 
 const recipientClaimSchema = new Schema(

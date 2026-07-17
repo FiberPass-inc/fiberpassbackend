@@ -27,6 +27,7 @@ import {
   MeteredRateCounterModel,
   UsageEventModel
 } from '../models/meteredPayment.model.js';
+import { NotificationDeliveryModel, PaymentReceiptModel } from '../models/receipt.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { WalletModel } from '../models/wallet.model.js';
@@ -225,6 +226,16 @@ const createMeteredPaymentModels: MigrationDefinition = {
   }
 };
 
+const createReceiptAndNotificationModels: MigrationDefinition = {
+  id: '011-create-receipt-and-notification-models',
+  description: 'Create immutable payment receipt and payload-free notification delivery indexes.',
+  async up() {
+    await PaymentReceiptModel.createIndexes();
+    await NotificationDeliveryModel.createIndexes();
+    await NotificationEndpointModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
@@ -235,5 +246,6 @@ export const migrations: readonly MigrationDefinition[] = [
   createNwcConnectionModels,
   createBitcoinConnectorModels,
   createScheduledPaymentModels,
-  createMeteredPaymentModels
+  createMeteredPaymentModels,
+  createReceiptAndNotificationModels
 ];

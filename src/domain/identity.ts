@@ -19,6 +19,9 @@ export type DestinationVerificationScope = (typeof DESTINATION_VERIFICATION_SCOP
 export const CONTACT_CHANNEL_TYPES = ['email', 'nostr'] as const;
 export type ContactChannelType = (typeof CONTACT_CHANNEL_TYPES)[number];
 
+export const NOTIFICATION_ENDPOINT_STATUSES = ['active', 'revoked', 'unsubscribed', 'deleted'] as const;
+export type NotificationEndpointStatus = (typeof NOTIFICATION_ENDPOINT_STATUSES)[number];
+
 export const CLAIM_STATUSES = ['pending', 'claimed', 'expired', 'revoked'] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 
