@@ -11,6 +11,7 @@ import {
   RecipientIdentityModel,
   WalletPrincipalModel
 } from '../models/identity.model.js';
+import { NotificationDeliveryModel, PaymentReceiptModel } from '../models/receipt.model.js';
 import { SessionModel } from '../models/session.model.js';
 
 export interface RecipientIdentityProjection {
@@ -278,24 +279,34 @@ export async function exportContactData(ownerWalletId: string): Promise<ContactD
 export async function deleteContactData(ownerWalletId: string): Promise<{
   claimChannelsDeleted: number;
   notificationEndpointsDeleted: number;
+  notificationDeliveriesCancelled: number;
   claimsRevoked: number;
   paymentProofsPreserved: number;
 }> {
   const now = new Date();
-  const [channelResult, endpointResult, claimResult, proofCount] = await Promise.all([
+  const deliveryExpiry = new Date(now.getTime() + env.NOTIFICATION_DELIVERY_RETENTION_DAYS * 86_400_000);
+  const [channelResult, endpointResult, claimResult, proofCount, receiptCount, deliveryResult] = await Promise.all([
     ClaimChannelModel.updateMany(
       { ownerWalletId, status: { $ne: 'deleted' } },
       { $set: { status: 'deleted', deletedAt: now }, $unset: { value: 1, valueHash: 1 } }
     ),
     NotificationEndpointModel.updateMany(
       { ownerWalletId, status: { $ne: 'deleted' } },
-      { $set: { status: 'deleted', deletedAt: now }, $unset: { value: 1, valueHash: 1 } }
+      { $set: { status: 'deleted', deletedAt: now }, $unset: { value: 1, valueHash: 1, relayUrls: 1, unsubscribeTokenHash: 1 } }
     ),
     RecipientClaimModel.updateMany(
       { ownerWalletId, status: 'pending' },
       { $set: { status: 'revoked', revokedAt: now } }
     ),
-    ChargeAttemptModel.countDocuments({ ownerWalletId })
+    ChargeAttemptModel.countDocuments({ ownerWalletId }),
+    PaymentReceiptModel.countDocuments({ ownerWalletId }),
+    NotificationDeliveryModel.updateMany(
+      { ownerWalletId, status: { $in: ['queued', 'retrying', 'delivering'] } },
+      {
+        $set: { status: 'cancelled', cancelledAt: now, leaseExpiresAt: now, expiresAt: deliveryExpiry },
+        $unset: { leaseId: 1, lastFailureCode: 1, lastFailureMessage: 1 }
+      }
+    )
   ]);
   await Promise.all([
     RecipientIdentityModel.updateMany({ ownerWalletId }, { $set: { contactDeletedAt: now } }),
@@ -318,7 +329,8 @@ export async function deleteContactData(ownerWalletId: string): Promise<{
   return {
     claimChannelsDeleted: channelResult.modifiedCount,
     notificationEndpointsDeleted: endpointResult.modifiedCount,
+    notificationDeliveriesCancelled: deliveryResult.modifiedCount,
     claimsRevoked: claimResult.modifiedCount,
-    paymentProofsPreserved: proofCount
+    paymentProofsPreserved: proofCount + receiptCount
   };
 }

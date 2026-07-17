@@ -3,6 +3,7 @@ import { env } from '../config/env.js';
 import { logger } from '../lib/logger.js';
 import { normalizePaymentWorkerId, runPaymentWorkerOnce } from '../services/automation.service.js';
 import { runDueSessionPayouts, runPayoutReceiptNotifications, runScheduledLiquidityPreparation } from '../services/session.service.js';
+import { runReceiptNotificationWorker } from '../services/notification.service.js';
 import { recordWorkerHeartbeat } from '../services/workerRuntime.service.js';
 import { runDuePaymentSchedules } from '../services/paymentSchedule.service.js';
 import { runMeteredPaymentWorker } from '../services/meteredPaymentWorker.service.js';
@@ -52,6 +53,13 @@ async function runLoop(): Promise<void> {
       if (receiptNotifications.processed > 0 || receiptNotifications.failed > 0) {
         logger.info('payout_receipts_processed', { workerId, ...receiptNotifications });
       }
+      const privateReceiptNotifications = await runReceiptNotificationWorker({
+        workerId,
+        limit: env.PAYMENT_WORKER_BATCH_SIZE
+      });
+      if (privateReceiptNotifications.claimed > 0) {
+        logger.info('private_receipt_notifications_processed', { workerId, ...privateReceiptNotifications });
+      }
 
       const result = await runPaymentWorkerOnce({ workerId, limit: env.PAYMENT_WORKER_BATCH_SIZE });
       if (result.processed > 0) {
@@ -62,7 +70,7 @@ async function runLoop(): Promise<void> {
         kind: 'payments',
         success: true,
         startedAt,
-        metrics: { freshRequestSchedules, meteredPayments, liquidityPreparation, scheduledPayouts, receiptNotifications, payments: result }
+        metrics: { freshRequestSchedules, meteredPayments, liquidityPreparation, scheduledPayouts, receiptNotifications, privateReceiptNotifications, payments: result }
       });
     } catch (error) {
       logger.error('payment_worker_batch_failed', { workerId, error });

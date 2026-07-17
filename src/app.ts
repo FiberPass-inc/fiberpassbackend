@@ -17,9 +17,11 @@ import { paymentConnectorsRouter } from './routes/paymentConnectors.routes.js';
 import { bitcoinRouter } from './routes/bitcoin.routes.js';
 import { nwcRouter } from './routes/nwc.routes.js';
 import { privacyRouter } from './routes/privacy.routes.js';
+import { receiptsRouter } from './routes/receipts.routes.js';
 import { paymentSchedulesRouter } from './routes/paymentSchedules.routes.js';
 import { walletRouter } from './routes/wallet.routes.js';
 import { runPaymentWorkerOnce } from './services/automation.service.js';
+import { runReceiptNotificationWorker } from './services/notification.service.js';
 import { runReconciliationWorkerOnce } from './services/reconciliation.service.js';
 import { runDueSessionPayouts, runScheduledLiquidityPreparation } from './services/session.service.js';
 import { runWebhookWorkerOnce } from './services/webhook.service.js';
@@ -59,6 +61,10 @@ async function runPaymentCron() {
   });
   const liquidityPreparation = await runScheduledLiquidityPreparation({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
   const scheduledPayouts = await runDueSessionPayouts({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
+  const receiptNotifications = await runReceiptNotificationWorker({
+    workerId: 'vercel-cron-receipt-notification-worker',
+    limit: env.PAYMENT_WORKER_BATCH_SIZE
+  });
   const automationPayments = await runPaymentWorkerOnce({
     workerId: 'vercel-cron-payment-worker',
     limit: env.PAYMENT_WORKER_BATCH_SIZE
@@ -71,7 +77,7 @@ async function runPaymentCron() {
     workerId: 'vercel-cron-reconciliation-worker',
     limit: env.PAYMENT_WORKER_BATCH_SIZE
   });
-  return { freshRequestSchedules, liquidityPreparation, scheduledPayouts, automationPayments, webhookDeliveries, reconciliation };
+  return { freshRequestSchedules, liquidityPreparation, scheduledPayouts, receiptNotifications, automationPayments, webhookDeliveries, reconciliation };
 }
 
 export const app = express();
@@ -197,6 +203,7 @@ app.use(paymentConnectorsRouter);
 app.use(bitcoinRouter);
 app.use(nwcRouter);
 app.use(privacyRouter);
+app.use(receiptsRouter);
 app.use(paymentSchedulesRouter);
 app.use(walletRouter);
 app.use('/v1', authRouter);
@@ -207,6 +214,7 @@ app.use('/v1', paymentConnectorsRouter);
 app.use('/v1', bitcoinRouter);
 app.use('/v1', nwcRouter);
 app.use('/v1', privacyRouter);
+app.use('/v1', receiptsRouter);
 app.use('/v1', paymentSchedulesRouter);
 app.use('/v2', authRouter);
 app.use('/v2', appsRouter);
@@ -216,6 +224,7 @@ app.use('/v2', paymentConnectorsRouter);
 app.use('/v2', bitcoinRouter);
 app.use('/v2', nwcRouter);
 app.use('/v2', privacyRouter);
+app.use('/v2', receiptsRouter);
 app.use('/v2', paymentSchedulesRouter);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {

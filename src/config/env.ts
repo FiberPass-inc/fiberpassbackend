@@ -53,6 +53,11 @@ const envSchema = z.object({
   EMAIL_FROM_ADDRESS: z.string().email().default('xbeach329@gmail.com'),
   EMAIL_FROM_NAME: z.string().default('FiberPass'),
   EMAIL_DEFAULT_TIME_ZONE: z.string().optional().default('Africa/Nairobi'),
+  NOTIFICATION_TOKEN_SECRET: z.string().optional().default(''),
+  NOSTR_NOTIFICATION_SECRET_KEY: z.string().optional().default(''),
+  NOSTR_NOTIFICATION_ALLOW_INSECURE_LOCAL_RELAY: booleanFromEnv.default(false),
+  NOTIFICATION_DELIVERY_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+  NOTIFICATION_DELIVERY_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   RECIPIENT_MAGIC_LINK_TTL_HOURS: z.coerce.number().int().positive().default(72),
   REQUEST_BODY_LIMIT: z.string().default('128kb'),
   TRUST_PROXY: booleanFromEnv.default(false),
@@ -130,6 +135,28 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['CRON_SECRET'],
         message: 'CRON_SECRET is required in production for worker and operator endpoints.'
+      });
+    }
+
+    if (env.NOTIFICATION_TOKEN_SECRET.trim().length < 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOTIFICATION_TOKEN_SECRET'],
+        message: 'NOTIFICATION_TOKEN_SECRET must contain at least 32 random characters in production.'
+      });
+    }
+    if (env.NOSTR_NOTIFICATION_SECRET_KEY && !/^[a-f0-9]{64}$/i.test(env.NOSTR_NOTIFICATION_SECRET_KEY.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOSTR_NOTIFICATION_SECRET_KEY'],
+        message: 'NOSTR_NOTIFICATION_SECRET_KEY must be a 32-byte hex Nostr sender key.'
+      });
+    }
+    if (env.NOSTR_NOTIFICATION_ALLOW_INSECURE_LOCAL_RELAY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NOSTR_NOTIFICATION_ALLOW_INSECURE_LOCAL_RELAY'],
+        message: 'Insecure local Nostr notification relays cannot be enabled in production.'
       });
     }
 
