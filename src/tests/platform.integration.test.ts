@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from '../models/automation.model.js';
+import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
@@ -18,7 +19,7 @@ process.env.FIBERPASS_OPERATOR_LOCK_HASH = '';
 
 const { createAuthChallenge, createStreamTicket, getAuthContextFromStreamTicket, getAuthContextFromToken, revokeAuthToken } = await import('../services/auth.service.js');
 const { createInvoice, createRecipient, runPaymentWorkerOnce } = await import('../services/automation.service.js');
-const { getCreateSessionPolicy } = await import('../services/session.service.js');
+const { chargeSession, getCreateSessionPolicy } = await import('../services/session.service.js');
 const { createRateLimitMiddleware } = await import('../middleware/rateLimit.middleware.js');
 const { migrateLegacyMoneyToAtomicStrings } = await import('../migrations/atomicMoney.js');
 
@@ -62,6 +63,16 @@ try {
   });
   const authContext = await getAuthContextFromToken(token);
   assert.deepEqual(authContext, { walletId, address: walletAddress });
+  const connectorCapabilities = await request(app)
+    .get('/v2/payment-connectors')
+    .set('Authorization', 'Bearer ' + token)
+    .expect(200);
+  assert.equal(connectorCapabilities.body.contractVersion, '2.0');
+  assert.deepEqual(
+    connectorCapabilities.body.capabilities.map((capability: { rail: string }) => capability.rail).sort(),
+    ['ckb_onchain', 'fiber']
+  );
+  await request(app).get('/v2/payment-connectors').expect(401);
   const expiredTicket = await createStreamTicket(authContext);
   assert.deepEqual(await getAuthContextFromStreamTicket(expiredTicket.ticket), authContext);
   await StreamTicketModel.updateOne(
@@ -165,6 +176,40 @@ try {
     lifecycleState: 'idle',
     logs: []
   });
+  const unsupportedSessionId = 'platform-unsupported-rail-session';
+  await SessionModel.create({
+    ownerWalletId: walletId,
+    publicId: unsupportedSessionId,
+    name: 'Unsupported connector pass',
+    serviceAddress: walletAddress,
+    paymentPurpose: 'app_session',
+    spent: 0,
+    spentMinor: 0,
+    reservedMinor: 0,
+    limit: 10,
+    limitMinor: 1_000_000_000,
+    currency: 'BTC',
+    duration: 'integration',
+    status: 'active',
+    iconType: 'rpc',
+    expiryTime: 'No expiry',
+    autoMicroCharges: true,
+    singleUse: false,
+    lifecycleState: 'idle',
+    logs: []
+  });
+  await assert.rejects(
+    () => chargeSession({
+      sessionId: unsupportedSessionId,
+      amount: 0.01,
+      type: 'Unsupported connector charge',
+      chargeOrigin: 'system',
+      idempotencyKey: 'platform-unsupported-connector',
+      paymentRequest: 'unsupported-payment-request-12345'
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'PAYMENT_CAPABILITY_UNSUPPORTED'
+  );
+  assert.equal(await ChargeAttemptModel.countDocuments({ sessionId: unsupportedSessionId }), 0);
   const actor = { appId, ownerWalletId: walletId, source: 'wallet' as const };
   const recipient = await createRecipient(actor, {
     name: 'Platform recipient',

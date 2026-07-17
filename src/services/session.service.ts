@@ -1,12 +1,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { paymentConnectorRegistry } from '../connectors/index.js';
 import { env } from '../config/env.js';
-import { assetIdForLegacyCurrency, PAYMENT_CONTRACT_VERSION } from '../domain/payment.js';
+import { assetIdForLegacyCurrency, moneyValue, PAYMENT_CONTRACT_VERSION, type PaymentIntent, type PaymentResult } from '../domain/payment.js';
 import { ckbTransactionExplorerUrl } from '../lib/ckbExplorer.js';
 import { listLiveVaultCells } from './ckbChain.service.js';
 import { ApiError } from '../lib/errors.js';
 import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.js';
 import { liveEvents } from '../lib/liveEvents.js';
-import { clampMinorUnits, fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount, roundMoney, toMinorUnits } from '../lib/money.js';
+import { asAtomicAmount, atomicAmountToLegacySafeNumber, clampMinorUnits, fallbackMinorUnits, fromMinorUnits, legacyMinorToAtomicAmount, roundMoney, toMinorUnits } from '../lib/money.js';
 import { AppModel, type AppRecord } from '../models/app.model.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
 import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionLifecycleProviderStatus, type SessionLifecycleState, type SessionRecord, type SessionStatus } from '../models/session.model.js';
@@ -26,13 +27,11 @@ import {
   type ProviderChargeResult
 } from './chargeReservation.service.js';
 import { requireEmailConfigured } from './email.service.js';
-import { fiberAdapter, hashFiberPaymentRequest, validateFiberInvoiceForPayment } from './fiberAdapter.js';
 import { createFiberExitInvoice, executeFiberExitCkbSettlement } from './fiberExitGateway.service.js';
 import { ensureVaultFundedFiberLiquidity, getCurrentFiberPayoutLiquiditySnapshot } from './fiberLiquidityBridge.service.js';
 import { fiberProvider } from './fiberProvider.js';
 import { sendRecipientInviteEmail, sendRecipientPayoutReceiptEmail } from './recipientEmail.service.js';
 import { deriveVaultForWallet } from './vault.service.js';
-import { executeVaultPayout, minimalRecipientCapacityMinor } from './vaultPayout.service.js';
 
 const LEGACY_PLACEHOLDER_BALANCE_MINOR = toMinorUnits('1240.50', 'USDC');
 const HISTORY_STATUSES: SessionStatus[] = ['settled', 'revoked', 'expired'];
@@ -857,7 +856,7 @@ export async function validateRecipientDestination(input: {
   fiberInvoice?: string;
 }): Promise<RecipientDestinationPolicyDto> {
   const address = cleanOptionalString(input.address);
-  const fiberInvoice = validateFiberPaymentRequest(input.fiberInvoice);
+  const fiberInvoice = cleanOptionalString(input.fiberInvoice);
   if (input.currency.toUpperCase() !== CREATE_SESSION_POLICY.currency) {
     throw new ApiError(400, 'UNSUPPORTED_CURRENCY', 'Recipient payouts currently support native CKB only.');
   }
@@ -868,44 +867,53 @@ export async function validateRecipientDestination(input: {
   if (Boolean(address) === Boolean(fiberInvoice)) {
     throw new ApiError(400, address ? 'RECIPIENT_DESTINATION_CONFLICT' : 'RECIPIENT_DESTINATION_REQUIRED', 'Choose exactly one destination: a CKB wallet or a Fiber invoice.');
   }
-  if (address) {
-    if (!isFiberCkbAddress(address)) {
-      throw new ApiError(400, 'INVALID_RECIPIENT_ADDRESS', FIBER_CKB_ADDRESS_ERROR);
+  const rail = address ? 'ckb_onchain' as const : 'fiber' as const;
+  const assetId = assetIdForLegacyCurrency(input.currency);
+  const intent: PaymentIntent = {
+    intentId: 'destination-policy-' + randomUUID(),
+    idempotencyKey: 'destination-policy',
+    rail,
+    network: env.FIBER_NETWORK,
+    money: moneyValue(assetId, legacyMinorToAtomicAmount(amountMinor)),
+    destination: {
+      kind: address ? 'address' : 'invoice',
+      rail,
+      network: env.FIBER_NETWORK,
+      value: address ?? fiberInvoice ?? ''
     }
-    const minimumAmountMinor = minimalRecipientCapacityMinor(address);
-    if (amountMinor < minimumAmountMinor) {
-      throw new ApiError(400, 'CKB_RECIPIENT_AMOUNT_BELOW_MINIMUM', 'This CKB address requires at least ' + fromMinorUnits(minimumAmountMinor, input.currency).toLocaleString('en-US') + ' ' + input.currency + ' for a valid output cell.', {
+  };
+  const connector = paymentConnectorRegistry.require({ rail, network: intent.network, assetId });
+  let quote;
+  try {
+    quote = await connector.quote(intent);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'CKB_RECIPIENT_AMOUNT_BELOW_MINIMUM') {
+      const minimumAmountAtomic = (error.details as { minimumAmountAtomic?: unknown } | undefined)?.minimumAmountAtomic;
+      const minimumAmountMinor = atomicAmountToLegacySafeNumber(asAtomicAmount(minimumAmountAtomic));
+      throw new ApiError(error.statusCode, error.code, error.message, {
+        minimumAmountAtomic,
         minimumAmountMinor,
         minimumAmount: fromMinorUnits(minimumAmountMinor, input.currency)
       });
     }
-    return {
-      mode: 'ckb',
-      amount: fromMinorUnits(amountMinor, input.currency),
-      amountMinor,
-      currency: input.currency,
-      minimumAmount: fromMinorUnits(minimumAmountMinor, input.currency),
-      minimumAmountMinor
-    };
+    throw error;
   }
-
-  try {
-    const invoice = await fiberProvider.parseInvoice(fiberInvoice as string);
-    validateFiberInvoiceForPayment({ invoice, amountMinor, currency: input.currency, network: fiberProvider.network });
-    return {
-      mode: 'fiber',
-      amount: fromMinorUnits(amountMinor, input.currency),
-      amountMinor,
-      currency: input.currency,
-      minimumAmount: fromMinorUnits(1, input.currency),
-      minimumAmountMinor: 1,
-      invoiceAmountMinor: invoice.amountMinor ?? undefined,
-      invoiceCurrency: invoice.currency
-    };
-  } catch (error) {
-    if (error instanceof ApiError) throw error;
-    throw new ApiError(400, 'FIBER_INVOICE_PARSE_FAILED', error instanceof Error ? error.message : 'Fiber invoice could not be parsed.');
-  }
+  const minimumAmountMinor = quote.metadata?.minimumAmountAtomic
+    ? atomicAmountToLegacySafeNumber(asAtomicAmount(quote.metadata.minimumAmountAtomic))
+    : 1;
+  const invoiceAmountMinor = quote.metadata?.invoiceAmountAtomic
+    ? atomicAmountToLegacySafeNumber(asAtomicAmount(quote.metadata.invoiceAmountAtomic))
+    : undefined;
+  return {
+    mode: address ? 'ckb' : 'fiber',
+    amount: fromMinorUnits(amountMinor, input.currency),
+    amountMinor,
+    currency: input.currency,
+    minimumAmount: fromMinorUnits(minimumAmountMinor, input.currency),
+    minimumAmountMinor,
+    invoiceAmountMinor,
+    invoiceCurrency: quote.metadata?.invoiceCurrency
+  };
 }
 
 function normalizeTimeZone(value?: string): string | undefined {
@@ -2227,11 +2235,26 @@ function chargePaymentRequest(input: ChargeSessionInput): string | undefined {
 
 function safeFiberPaymentRequestHash(paymentRequest?: string): string | undefined {
   if (!paymentRequest) return undefined;
-  try {
-    return hashFiberPaymentRequest(paymentRequest);
-  } catch {
-    return undefined;
+  const normalized = paymentRequest.trim();
+  return normalized ? createHash('sha256').update(normalized).digest('hex') : undefined;
+}
+
+function providerChargeFromConnectorResult(
+  result: PaymentResult,
+  executionLayer: 'fiber' | 'ckb-vault',
+  paymentRequestHash?: string
+): ProviderChargeResult {
+  if (result.status !== 'succeeded' || !result.proof?.reference) {
+    throw new ApiError(502, 'PAYMENT_CONNECTOR_PROOF_MISSING', 'Payment connector success requires a verifiable proof.');
   }
+  return {
+    provider: result.connectorId,
+    network: result.proof.network ?? env.FIBER_NETWORK,
+    proofId: result.proof.reference,
+    proofType: result.proof.kind === 'transaction' ? 'ckb_transaction' : 'fiber_payment',
+    executionLayer,
+    paymentRequestHash
+  };
 }
 
 export function chargeRequestFingerprint(input: {
@@ -2307,15 +2330,14 @@ export async function assertDailySessionSpendLimit(sessionId: string, amountMino
 }
 
 export async function chargeSession(input: ChargeSessionInput): Promise<SessionsOverviewDto> {
-  const amountMinor = toMinorUnits(String(input.amount), CREATE_SESSION_POLICY.currency);
-  if (amountMinor <= 0) {
-    throw new ApiError(400, 'INVALID_CHARGE_AMOUNT', 'Charge amount must be greater than zero.');
-  }
-
   const chargeInput: ChargeSessionInput = { ...input, metadata: sanitizeChargeMetadata(input) };
   let session = await getSessionOrThrow(input.sessionId);
   const ownerWalletId = session.ownerWalletId as string;
   const currency = session.currency;
+  const amountMinor = toMinorUnits(String(input.amount), currency);
+  if (amountMinor <= 0) {
+    throw new ApiError(400, 'INVALID_CHARGE_AMOUNT', 'Charge amount must be greater than zero.');
+  }
   const sessionObject = session.toObject();
   const isScheduledPayout = chargeInput.metadata?.scheduledPayout === true;
   const directVaultPayout = chargeInput.metadata?.directVaultPayout === true;
@@ -2325,18 +2347,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
   const recipientAddress = metadataString(chargeInput.metadata, 'recipientAddress', 'recipientServiceAddress', 'payeeAddress');
   const providerTarget = metadataString(chargeInput.metadata, 'fiberKeysendTargetPubkey');
   const executionLayer = directVaultPayout ? 'ckb-vault' : 'fiber';
-  const paymentRequestHash = directVaultPayout ? undefined : safeFiberPaymentRequestHash(paymentRequest);
-  const requestFingerprint = chargeRequestFingerprint({
-    sessionId: input.sessionId,
-    amountMinor,
-    currency,
-    appId: input.appId,
-    serviceReference,
-    paymentRequestHash,
-    executionLayer,
-    recipientAddress,
-    providerTarget
-  });
+  const localPaymentRequestHash = directVaultPayout ? undefined : safeFiberPaymentRequestHash(paymentRequest);
   const baseAttemptMetadata = {
     ...(chargeInput.metadata ?? {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -2372,6 +2383,63 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     await writeChargeFailureAudit({ request: input, ownerWalletId, amountMinor, error });
     throw error;
   }
+
+  const requestFingerprint = chargeRequestFingerprint({
+    sessionId: input.sessionId,
+    amountMinor,
+    currency,
+    appId: input.appId,
+    serviceReference,
+    paymentRequestHash: localPaymentRequestHash,
+    executionLayer,
+    recipientAddress,
+    providerTarget
+  });
+  const existingAttempt = await ChargeAttemptModel.findOne({ sessionId: input.sessionId, idempotencyKey }).lean<ChargeAttemptLike | null>();
+  if (existingAttempt) {
+    assertIdempotentChargeReplay({ attempt: existingAttempt, sessionId: input.sessionId, amountMinor, currency, requestFingerprint });
+    if (existingAttempt.status === 'succeeded') return getSessionsOverview(ownerWalletId);
+    if (existingAttempt.status === 'failed') {
+      throw new ApiError(409, 'CHARGE_ATTEMPT_FAILED', existingAttempt.failureMessage ?? 'This idempotent charge already failed.', {
+        failureCode: existingAttempt.failureCode
+      });
+    }
+  }
+
+  const rail = directVaultPayout ? 'ckb_onchain' as const : 'fiber' as const;
+  const assetId = assetIdForLegacyCurrency(currency);
+  const paymentIntent: PaymentIntent = {
+    intentId: input.sessionId + ':' + idempotencyKey,
+    idempotencyKey: idempotencyKey!,
+    rail,
+    network: session.fiberNetwork ?? env.FIBER_NETWORK,
+    money: moneyValue(assetId, legacyMinorToAtomicAmount(amountMinor)),
+    destination: {
+      kind: directVaultPayout ? 'address' : providerTarget ? 'endpoint' : 'invoice',
+      rail,
+      network: session.fiberNetwork ?? env.FIBER_NETWORK,
+      value: directVaultPayout ? recipientAddress ?? '' : providerTarget ?? paymentRequest ?? ''
+    },
+    description: input.type,
+    expiresAt: session.expiryAt instanceof Date ? session.expiryAt.toISOString() : undefined
+  };
+  const connector = paymentConnectorRegistry.require({ rail, network: paymentIntent.network, assetId });
+  let connectorQuote;
+  if (!existingAttempt || existingAttempt.providerStatus === 'not_started') {
+    try {
+      connectorQuote = await connector.quote(paymentIntent);
+    } catch (error) {
+      const publicError = error instanceof ApiError
+        ? error
+        : new ApiError(502, 'PAYMENT_CONNECTOR_QUOTE_FAILED', 'Payment connector quote failed.');
+      if (existingAttempt) {
+        await releaseChargeReservation(existingAttempt.attemptId, publicError.code, publicError.message);
+      }
+      await writeChargeFailureAudit({ request: input, ownerWalletId, amountMinor, error: publicError });
+      throw publicError;
+    }
+  }
+  const paymentRequestHash = connectorQuote?.metadata?.paymentRequestHash ?? localPaymentRequestHash;
 
   const completeCharge = async (attemptId: string, charge: ProviderChargeResult): Promise<SessionsOverviewDto> => {
     try {
@@ -2469,27 +2537,20 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       const correlationId = attempt.providerCorrelationId ?? '';
       let payment;
       try {
-        payment = await fiberAdapter.reconcilePayment(correlationId);
+        payment = await connector.lookup({ rail: 'fiber', network: paymentIntent.network, assetId, reference: correlationId });
       } catch (error) {
         throw new ApiError(503, 'CHARGE_OUTCOME_UNCERTAIN', 'The Fiber payment outcome must be reconciled before retrying.', {
           attemptId: attempt.attemptId,
           cause: error instanceof Error ? error.message : 'unknown'
         });
       }
-      if (payment.status === 'Success') {
-        const charge: ProviderChargeResult = {
-          provider: payment.provider,
-          network: payment.network,
-          proofId: payment.paymentHash,
-          proofType: 'fiber_payment',
-          executionLayer: 'fiber',
-          paymentRequestHash: attempt.paymentRequestHash ?? undefined
-        };
+      if (payment.status === 'succeeded') {
+        const charge = providerChargeFromConnectorResult(payment, 'fiber', attempt.paymentRequestHash ?? undefined);
         await markChargeProviderSucceeded(attempt.attemptId, charge);
         return completeCharge(attempt.attemptId, charge);
       }
-      if (payment.status === 'Failed') {
-        const message = payment.failure || 'Fiber payment failed before settlement.';
+      if (payment.status === 'failed') {
+        const message = payment.failureMessage || 'Fiber payment failed before settlement.';
         await releaseChargeReservation(attempt.attemptId, 'FIBER_PAYMENT_FAILED', message);
         throw new ApiError(502, 'FIBER_PAYMENT_FAILED', message);
       }
@@ -2500,36 +2561,21 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     });
   };
 
-  const existingAttempt = await ChargeAttemptModel.findOne({ sessionId: input.sessionId, idempotencyKey }).lean<ChargeAttemptLike | null>();
-  if (existingAttempt) {
-    assertIdempotentChargeReplay({ attempt: existingAttempt, sessionId: input.sessionId, amountMinor, currency, requestFingerprint });
-    if (existingAttempt.status === 'succeeded') return getSessionsOverview(ownerWalletId);
-    if (existingAttempt.status === 'failed') {
-      throw new ApiError(409, 'CHARGE_ATTEMPT_FAILED', existingAttempt.failureMessage ?? 'This idempotent charge already failed.', {
-        failureCode: existingAttempt.failureCode
-      });
-    }
-    if (existingAttempt.providerStatus !== 'not_started') {
-      return recoverProviderOutcome(existingAttempt);
-    }
+  if (existingAttempt && existingAttempt.providerStatus !== 'not_started') {
+    return recoverProviderOutcome(existingAttempt);
   }
 
+  if (!connectorQuote) throw new ApiError(503, 'PAYMENT_CONNECTOR_QUOTE_MISSING', 'Payment connector quote is unavailable.');
   const attemptId = existingAttempt?.attemptId ?? randomUUID();
   let leaseId = randomUUID();
-  const fiberInput = {
-    sessionId: input.sessionId,
-    networkSessionId: session.fiberSessionId ?? undefined,
-    appAddress: session.serviceAddress,
-    amountMinor,
-    currency,
-    paymentRequest,
-    metadata: { ...baseAttemptMetadata, chargeAttemptId: attemptId }
-  };
-  let providerCorrelationId = executionLayer + ':' + attemptId;
+  const providerCorrelationId = connectorQuote.metadata?.providerCorrelationId ?? executionLayer + ':' + attemptId;
   const attemptMetadata = {
     ...baseAttemptMetadata,
     chargeAttemptId: attemptId,
-    providerCorrelationId
+    providerCorrelationId,
+    connectorId: connector.id,
+    connectorQuoteId: connectorQuote.quoteId,
+    paymentRail: rail
   };
 
   let attempt = existingAttempt;
@@ -2631,23 +2677,16 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     throw new ApiError(409, 'CHARGE_ATTEMPT_PENDING', 'A worker already owns this idempotent charge attempt.', { attemptId: attempt.attemptId });
   }
 
-  let preparedPayment;
-  try {
-    preparedPayment = directVaultPayout ? undefined : await fiberAdapter.preparePayment(fiberInput);
-  } catch (error) {
-    const publicError = error instanceof ApiError
-      ? error
-      : new ApiError(502, 'FIBER_PAYMENT_FAILED', error instanceof Error ? error.message : 'Fiber payment preparation failed.');
-    await releaseChargeReservation(attempt.attemptId, publicError.code, publicError.message);
-    await writeChargeFailureAudit({ request: input, ownerWalletId, amountMinor, error: publicError });
-    throw publicError;
+  if (Date.parse(connectorQuote.expiresAt) <= Date.now()) {
+    await releaseChargeReservation(attempt.attemptId, 'PAYMENT_QUOTE_EXPIRED', 'The payment quote expired before submission.');
+    throw new ApiError(410, 'PAYMENT_QUOTE_EXPIRED', 'The payment quote expired before submission.');
   }
-  providerCorrelationId = preparedPayment?.providerCorrelationId ?? providerCorrelationId;
+
   const correlated = await setChargeProviderCorrelation({
     attemptId: attempt.attemptId,
     leaseId,
     providerCorrelationId,
-    paymentRequestHash: preparedPayment?.paymentRequestHash
+    paymentRequestHash
   });
   if (!correlated) {
     throw new ApiError(409, 'CHARGE_ATTEMPT_PENDING', 'The charge attempt correlation is already owned by another worker.', { attemptId: attempt.attemptId });
@@ -2660,48 +2699,29 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
 
   let charge: ProviderChargeResult;
   try {
-    if (directVaultPayout) {
-      const vaultCharge = await executeVaultPayout({
-        ownerWalletId,
-        sessionId: input.sessionId,
-        recipientAddress: recipientAddress!,
-        amountMinor,
-        currency
-      });
-      charge = { ...vaultCharge, proofType: 'ckb_transaction', executionLayer: 'ckb-vault' };
-    } else {
-      const fiberCharge = await fiberAdapter.executePayment(fiberInput, preparedPayment);
-      charge = {
-        provider: fiberCharge.provider,
-        network: fiberCharge.network,
-        proofId: fiberCharge.proofId,
-        proofType: fiberCharge.proofType,
-        executionLayer: 'fiber',
-        paymentRequestHash: fiberCharge.paymentRequestHash
-      };
-    }
+    const connectorResult = await connector.execute(paymentIntent, connectorQuote, {
+      sessionId: input.sessionId,
+      ownerWalletId,
+      networkSessionId: session.fiberSessionId ?? undefined,
+      appAddress: session.serviceAddress,
+      metadata: { ...baseAttemptMetadata, chargeAttemptId: attempt.attemptId }
+    });
+    charge = providerChargeFromConnectorResult(connectorResult, executionLayer, paymentRequestHash);
   } catch (error) {
-    if (!directVaultPayout && /^0x[0-9a-fA-F]{64}$/.test(providerCorrelationId)) {
+    if (rail === 'fiber' && /^0x[0-9a-fA-F]{64}$/.test(providerCorrelationId)) {
       let reconciledPayment;
       try {
-        reconciledPayment = await fiberAdapter.reconcilePayment(providerCorrelationId);
+        reconciledPayment = await connector.lookup({ rail, network: paymentIntent.network, assetId, reference: providerCorrelationId });
       } catch {
         reconciledPayment = undefined;
       }
-      if (reconciledPayment?.status === 'Success') {
-        charge = {
-          provider: reconciledPayment.provider,
-          network: reconciledPayment.network,
-          proofId: reconciledPayment.paymentHash,
-          proofType: 'fiber_payment',
-          executionLayer: 'fiber',
-          paymentRequestHash: preparedPayment?.paymentRequestHash
-        };
+      if (reconciledPayment?.status === 'succeeded') {
+        charge = providerChargeFromConnectorResult(reconciledPayment, 'fiber', paymentRequestHash);
         await markChargeProviderSucceeded(attempt.attemptId, charge);
         return completeCharge(attempt.attemptId, charge);
       }
-      if (reconciledPayment?.status === 'Failed') {
-        const message = reconciledPayment.failure || (error instanceof Error ? error.message : 'Fiber payment failed.');
+      if (reconciledPayment?.status === 'failed') {
+        const message = reconciledPayment.failureMessage || 'Fiber payment failed.';
         await releaseChargeReservation(attempt.attemptId, 'FIBER_PAYMENT_FAILED', message);
         throw new ApiError(502, 'FIBER_PAYMENT_FAILED', message);
       }
