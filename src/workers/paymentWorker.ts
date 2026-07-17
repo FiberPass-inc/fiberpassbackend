@@ -4,6 +4,7 @@ import { logger } from '../lib/logger.js';
 import { normalizePaymentWorkerId, runPaymentWorkerOnce } from '../services/automation.service.js';
 import { runDueSessionPayouts, runPayoutReceiptNotifications, runScheduledLiquidityPreparation } from '../services/session.service.js';
 import { recordWorkerHeartbeat } from '../services/workerRuntime.service.js';
+import { runDuePaymentSchedules } from '../services/paymentSchedule.service.js';
 
 const workerId = normalizePaymentWorkerId(process.env.PAYMENT_WORKER_ID);
 const startedAt = new Date();
@@ -20,6 +21,14 @@ async function runLoop(): Promise<void> {
 
   while (!stopping) {
     try {
+      const freshRequestSchedules = await runDuePaymentSchedules({
+        workerId,
+        limit: env.PAYMENT_WORKER_BATCH_SIZE
+      });
+      if (freshRequestSchedules.claimed > 0 || freshRequestSchedules.blocked > 0) {
+        logger.info('fresh_request_schedules_processed', { workerId, ...freshRequestSchedules });
+      }
+
       const liquidityPreparation = await runScheduledLiquidityPreparation({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
       if (liquidityPreparation.processed > 0 || liquidityPreparation.failed > 0) {
         logger.info('scheduled_liquidity_prepared', { workerId, ...liquidityPreparation });
@@ -44,7 +53,7 @@ async function runLoop(): Promise<void> {
         kind: 'payments',
         success: true,
         startedAt,
-        metrics: { liquidityPreparation, scheduledPayouts, receiptNotifications, payments: result }
+        metrics: { freshRequestSchedules, liquidityPreparation, scheduledPayouts, receiptNotifications, payments: result }
       });
     } catch (error) {
       logger.error('payment_worker_batch_failed', { workerId, error });

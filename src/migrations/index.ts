@@ -20,6 +20,7 @@ import {
 import { MigrationModel } from '../models/migration.model.js';
 import { NwcConnectionModel, NwcPaymentModel } from '../models/nwc.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
+import { PaymentScheduleModel, ScheduledOccurrenceModel } from '../models/schedule.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { WalletModel } from '../models/wallet.model.js';
@@ -67,6 +68,8 @@ const indexedModels = [
   NwcConnectionModel,
   NwcPaymentModel,
   RateLimitBucketModel,
+  PaymentScheduleModel,
+  ScheduledOccurrenceModel,
   SessionModel,
   StreamTicketModel,
   WalletModel,
@@ -187,6 +190,20 @@ const createBitcoinConnectorModels: MigrationDefinition = {
   }
 };
 
+const createScheduledPaymentModels: MigrationDefinition = {
+  id: '009-create-scheduled-payment-models',
+  description: 'Create fresh-request schedules, occurrence-ledger indexes, and legacy destination asset defaults.',
+  async up() {
+    await PaymentDestinationModel.collection.updateMany(
+      { assetId: { $exists: false }, rail: { $in: ['ckb_onchain', 'fiber'] } },
+      { $set: { assetId: 'ckb:ckb' } }
+    );
+    await PaymentDestinationModel.createIndexes();
+    await PaymentScheduleModel.createIndexes();
+    await ScheduledOccurrenceModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
@@ -195,5 +212,6 @@ export const migrations: readonly MigrationDefinition[] = [
   separateRecipientIdentityData,
   modelFundingSources,
   createNwcConnectionModels,
-  createBitcoinConnectorModels
+  createBitcoinConnectorModels,
+  createScheduledPaymentModels
 ];

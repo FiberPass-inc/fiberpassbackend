@@ -78,6 +78,8 @@ const envSchema = z.object({
   BTCPAY_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
   BTCPAY_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
   BTCPAY_ALLOW_INSECURE_LOCAL: booleanFromEnv.default(false),
+  SCHEDULE_RESOLVER_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(10000),
+  SCHEDULE_ALLOW_INSECURE_LOCAL_RESOLVERS: booleanFromEnv.default(false),
   BITCOIN_NETWORK: z.enum(['mainnet', 'testnet', 'signet', 'regtest']).default('regtest'),
   BITCOIN_CORE_RPC_URL: z.string().optional().default(''),
   BITCOIN_CORE_RPC_USER: z.string().optional().default(''),
@@ -165,6 +167,13 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['BTCPAY_ALLOW_INSECURE_LOCAL'],
         message: 'Insecure local BTCPay connections cannot be enabled in production.'
+      });
+    }
+    if (env.SCHEDULE_ALLOW_INSECURE_LOCAL_RESOLVERS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SCHEDULE_ALLOW_INSECURE_LOCAL_RESOLVERS'],
+        message: 'Insecure local scheduled-payment resolvers cannot be enabled in production.'
       });
     }
   }

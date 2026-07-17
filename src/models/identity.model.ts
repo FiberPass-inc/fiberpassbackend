@@ -3,6 +3,7 @@ import {
   CLAIM_STATUSES,
   CONTACT_CHANNEL_TYPES,
   DESTINATION_KINDS,
+  DESTINATION_RAILS,
   DESTINATION_STATUSES,
   DESTINATION_VERIFICATION_METHODS,
   DESTINATION_VERIFICATION_SCOPES,
@@ -40,11 +41,15 @@ const paymentDestinationSchema = new Schema(
     destinationId: { type: String, required: true, unique: true, index: true },
     recipientId: { type: String, required: true, index: true },
     ownerWalletId: { type: String, required: true, index: true },
-    rail: { type: String, enum: ['ckb_onchain', 'fiber'], required: true },
+    rail: { type: String, enum: DESTINATION_RAILS, required: true },
     network: { type: String, required: true, trim: true },
+    assetId: { type: String, required: true, default: 'ckb:ckb', match: /^[a-z0-9][a-z0-9._-]{0,31}:[a-z0-9][a-z0-9._:-]{0,127}$/ },
     kind: { type: String, enum: DESTINATION_KINDS, required: true },
     value: { type: String, required: true, trim: true },
     valueHash: { type: String, required: true, index: true },
+    resolverEndpoint: { type: String, trim: true },
+    configurationIdempotencyKey: { type: String, trim: true },
+    configurationFingerprint: { type: String, match: /^[0-9a-f]{64}$/ },
     reusable: { type: Boolean, required: true },
     status: { type: String, enum: DESTINATION_STATUSES, required: true, default: 'active', index: true },
     verificationMethod: { type: String, enum: DESTINATION_VERIFICATION_METHODS, required: true },
@@ -58,6 +63,10 @@ const paymentDestinationSchema = new Schema(
 );
 
 paymentDestinationSchema.index({ recipientId: 1, status: 1, createdAt: -1 });
+paymentDestinationSchema.index(
+  { ownerWalletId: 1, configurationIdempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { configurationIdempotencyKey: { $type: 'string' } } }
+);
 
 const claimChannelSchema = new Schema(
   {
