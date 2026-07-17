@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type { ResolverTransport } from '../connectors/destinationResolverClient.js';
 import { paymentConnectorRegistry } from '../connectors/index.js';
 import { asAssetId, moneyValue, type PaymentIntent, type PaymentRail } from '../domain/payment.js';
+import { allocateAtomicFee } from '../domain/receipt.js';
 import { ApiError } from '../lib/errors.js';
+import { logger } from '../lib/logger.js';
 import { atomicAmountFromBigInt, parseAtomicAmount } from '../lib/money.js';
 import { BtcpayPaymentModel } from '../models/bitcoin.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
@@ -27,6 +29,7 @@ import {
   setSessionAtomic
 } from './meteredPayment.service.js';
 import { getNwcPaymentStatus, payNwcInvoice } from './nwc.service.js';
+import { createPaymentReceipt, queueReceiptNotifications } from './receipt.service.js';
 
 const BATCH_LEASE_MS = 60_000;
 
@@ -34,6 +37,7 @@ export interface MeteredExecutionResult {
   status: 'succeeded' | 'pending' | 'failed';
   providerPaymentId?: string;
   paymentHash?: string;
+  feeAtomic?: string;
   proofKind?: string;
   proofReference?: string;
   failureCode?: string;
@@ -66,6 +70,7 @@ function paymentDtoResult(payment: {
   id: string;
   status: string;
   paymentHash: string;
+  feeAtomic: string;
   proof?: { kind: string; reference: string };
   failure?: { code: string; message?: string };
 }): MeteredExecutionResult {
@@ -73,6 +78,7 @@ function paymentDtoResult(payment: {
     status: payment.status === 'succeeded' ? 'succeeded' : payment.status === 'failed' ? 'failed' : 'pending',
     providerPaymentId: payment.id,
     paymentHash: payment.paymentHash,
+    feeAtomic: payment.feeAtomic,
     proofKind: payment.proof?.kind,
     proofReference: payment.proof?.reference,
     failureCode: payment.failure?.code,
@@ -130,6 +136,7 @@ export const productionMeteredExecutor: MeteredBatchExecutor = {
     return {
       status: result.status === 'succeeded' ? 'succeeded' : result.status === 'failed' ? 'failed' : 'pending',
       providerPaymentId: result.connectorReference ?? quote.metadata?.providerCorrelationId,
+      feeAtomic: quote.fee.amountAtomic,
       proofKind: result.proof?.kind,
       proofReference: result.proof?.reference,
       failureCode: result.failureCode,
@@ -179,6 +186,7 @@ export const productionMeteredExecutor: MeteredBatchExecutor = {
     return {
       status: result.status === 'succeeded' ? 'succeeded' : result.status === 'failed' ? 'failed' : 'pending',
       providerPaymentId: result.connectorReference,
+      feeAtomic: result.proof?.metadata?.feeAtomic,
       proofKind: result.proof?.kind,
       proofReference: result.proof?.reference,
       failureCode: result.failureCode,
@@ -189,13 +197,14 @@ export const productionMeteredExecutor: MeteredBatchExecutor = {
 
 async function finalizeMeteredBatch(batchId: string, result: MeteredExecutionResult): Promise<void> {
   let audit: { walletId: string; grantId: string; totalAtomic: string; eventCount: number } | undefined;
+  let receiptIds: string[] = [];
   await MeteredBatchModel.db.transaction(async (mongoSession) => {
     const batch = await MeteredBatchModel.findOne({ batchId }).session(mongoSession);
     if (!batch || batch.status === 'succeeded') return;
     const events = await UsageEventModel.find({
       batchId,
       status: { $in: ['reserved', 'settling'] }
-    }).session(mongoSession);
+    }).sort({ acceptedAt: 1, eventId: 1 }).session(mongoSession);
     const total = events.reduce((sum, event) => sum + parseAtomicAmount(event.amountAtomic), 0n);
     if (total !== parseAtomicAmount(batch.totalAtomic) || events.length !== batch.eventCount) {
       throw new Error('Metered batch event total does not match its immutable accounting total.');
@@ -264,6 +273,31 @@ async function finalizeMeteredBatch(batchId: string, result: MeteredExecutionRes
       },
       { session: mongoSession }
     );
+    const feeShares = result.feeAtomic == null
+      ? events.map(() => undefined)
+      : allocateAtomicFee(result.feeAtomic, events.map((event) => event.amountAtomic));
+    const createdReceiptIds: string[] = [];
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      createdReceiptIds.push(await createPaymentReceipt({
+        ownerWalletId: event.ownerWalletId,
+        recipientId: event.recipientId,
+        sourceType: 'usage_event',
+        sourceId: event.eventId,
+        settlementId: batch.batchId,
+        rail: event.rail,
+        network: event.network,
+        assetId: event.assetId,
+        amountAtomic: event.amountAtomic,
+        feeAtomic: feeShares[index],
+        status: 'succeeded',
+        paymentHash: result.paymentHash ?? batch.paymentHash ?? undefined,
+        proofKind: result.proofKind,
+        proofReference: result.proofReference,
+        settledAt: now
+      }, mongoSession));
+    }
+    receiptIds = createdReceiptIds;
     batch.status = 'succeeded';
     batch.accepting = false;
     batch.completedAt = now;
@@ -283,6 +317,11 @@ async function finalizeMeteredBatch(batchId: string, result: MeteredExecutionRes
       eventCount: batch.eventCount
     };
   });
+  for (const receiptId of receiptIds) {
+    await queueReceiptNotifications(receiptId).catch((error) => {
+      logger.warn('receipt_notification_queue_failed', { receiptId, error });
+    });
+  }
   if (audit) {
     await writeAuditLog({
       actorWalletId: audit.walletId,

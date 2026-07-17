@@ -14,6 +14,7 @@ import {
 } from '../domain/schedule.js';
 import { env } from '../config/env.js';
 import { ApiError } from '../lib/errors.js';
+import { logger } from '../lib/logger.js';
 import {
   asAtomicAmount,
   atomicAmountFromBigInt,
@@ -49,6 +50,7 @@ import { getBtcpayPayment, payBtcpayLightning } from './btcpay.service.js';
 import { getNwcPaymentStatus, payNwcInvoice } from './nwc.service.js';
 import { chargeSession } from './session.service.js';
 import { hashPrivateValue, newIdentityId } from './recipientIdentity.service.js';
+import { createPaymentReceipt, queueReceiptNotifications } from './receipt.service.js';
 
 const OCCURRENCE_LEASE_MS = 90_000;
 const RETRY_BASE_MS = 30_000;
@@ -802,9 +804,11 @@ async function finalizeOccurrenceSuccess(input: {
   paymentHash?: string;
   proofKind?: string;
   proofReference?: string;
+  feeAtomic?: string;
   sessionAlreadyDebited?: boolean;
   now: Date;
 }): Promise<void> {
+  let receiptId: string | undefined;
   await ScheduledOccurrenceModel.db.transaction(async (mongoSession) => {
     const occurrence = await ScheduledOccurrenceModel.findOne({ occurrenceId: input.occurrence.occurrenceId }).session(mongoSession);
     if (!occurrence || occurrence.status === 'succeeded') return;
@@ -861,7 +865,29 @@ async function finalizeOccurrenceSuccess(input: {
     else schedule.nextOccurrenceAt = next;
     if (['completed', 'revoked', 'depleted', 'expired'].includes(schedule.status)) schedule.completedAt = input.now;
     await schedule.save({ session: mongoSession });
+    receiptId = await createPaymentReceipt({
+      ownerWalletId: occurrence.ownerWalletId,
+      recipientId: occurrence.recipientId,
+      sourceType: 'scheduled_occurrence',
+      sourceId: occurrence.occurrenceId,
+      settlementId: input.executorPaymentId,
+      rail: occurrence.rail,
+      network: occurrence.network,
+      assetId: occurrence.assetId,
+      amountAtomic: occurrence.amountAtomic,
+      feeAtomic: input.feeAtomic,
+      status: 'succeeded',
+      paymentHash: input.paymentHash,
+      proofKind: input.proofKind,
+      proofReference: input.proofReference,
+      settledAt: input.now
+    }, mongoSession);
   });
+  if (receiptId) {
+    await queueReceiptNotifications(receiptId).catch((error) => {
+      logger.warn('receipt_notification_queue_failed', { receiptId, error });
+    });
+  }
   await writeAuditLog({
     actorWalletId: input.occurrence.ownerWalletId,
     action: 'schedule.occurrence.succeeded',
@@ -885,7 +911,7 @@ async function reconcileExistingExecution(
     if (!stored) return 'none';
     const payment = await getNwcPaymentStatus({ connectionId: stored.connectionId, ownerWalletId: stored.ownerWalletId, paymentHash: stored.paymentHash });
     if (payment.status === 'succeeded') {
-      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, now });
+      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, feeAtomic: payment.feeAtomic, now });
       return 'succeeded';
     }
     if (payment.status === 'failed') return 'failed';
@@ -904,7 +930,7 @@ async function reconcileExistingExecution(
     if (!stored) return 'none';
     const payment = await getBtcpayPayment({ connectionId: stored.connectionId, ownerWalletId: stored.ownerWalletId, paymentHash: stored.paymentHash });
     if (payment.status === 'succeeded') {
-      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, now });
+      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, feeAtomic: payment.feeAtomic, now });
       return 'succeeded';
     }
     if (payment.status === 'failed') return 'failed';
@@ -948,7 +974,7 @@ async function executeResolvedRequest(
       executionMode: 'unattended'
     });
     if (payment.status === 'succeeded') {
-      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, now: new Date() });
+      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, feeAtomic: payment.feeAtomic, now: new Date() });
       return 'succeeded';
     }
     await ScheduledOccurrenceModel.updateOne({ occurrenceId: occurrence.occurrenceId }, {
@@ -960,7 +986,7 @@ async function executeResolvedRequest(
   if (schedule.executor === 'btcpay') {
     const payment = await payBtcpayLightning({ connectionId: schedule.connectionId ?? '', ownerWalletId: schedule.ownerWalletId, invoice: paymentRequest, idempotencyKey: occurrence.occurrenceId, maxFeeAtomic: schedule.maxFeeAtomic });
     if (payment.status === 'succeeded') {
-      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, now: new Date() });
+      await finalizeOccurrenceSuccess({ occurrence, executorPaymentId: payment.id, paymentHash: payment.paymentHash, proofKind: payment.proof?.kind, proofReference: payment.proof?.reference, feeAtomic: payment.feeAtomic, now: new Date() });
       return 'succeeded';
     }
     await ScheduledOccurrenceModel.updateOne({ occurrenceId: occurrence.occurrenceId }, {
