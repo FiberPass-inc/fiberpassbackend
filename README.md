@@ -26,6 +26,9 @@ The exact atomic-unit API contract and v1 migration behavior are documented in
 [docs/api-money-contract-v2.md](docs/api-money-contract-v2.md).
 Connector selection, capability discovery, and provider error isolation are
 documented in [docs/payment-connectors.md](docs/payment-connectors.md).
+Recipient identity, single-use destination claims, reusable destination rules,
+and privacy deletion are documented in
+[docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
 
 ## Stack
 
@@ -100,10 +103,17 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /events/ticket`
 - `GET /events?ticket=<short-lived-ticket>`
 - `POST /sessions`
+- `GET /recipient-claims/:token`
+- `POST /recipient-claims/:token`
+- `POST /recipient-claims/:token/destination-policy`
+- `POST /sessions/:id/recipient-invites/resend`
+- `POST /sessions/:id/recipient-claims/:claimId/revoke`
 - `POST /sessions/:id/top-up`
 - `POST /sessions/:id/toggle-pause`
 - `POST /sessions/:id/revoke`
 - `POST /sessions/:id/settle`
+- `GET /privacy/export`
+- `DELETE /privacy/contact-data`
 - `GET /apps`
 - `POST /apps`
 - `POST /apps/:appId/api-keys`

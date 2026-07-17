@@ -14,6 +14,7 @@ import { authRouter } from './routes/auth.routes.js';
 import { fiberRouter } from './routes/fiber.routes.js';
 import { sessionsRouter } from './routes/sessions.routes.js';
 import { paymentConnectorsRouter } from './routes/paymentConnectors.routes.js';
+import { privacyRouter } from './routes/privacy.routes.js';
 import { walletRouter } from './routes/wallet.routes.js';
 import { runPaymentWorkerOnce } from './services/automation.service.js';
 import { runReconciliationWorkerOnce } from './services/reconciliation.service.js';
@@ -185,17 +186,20 @@ app.use(authRouter);
 app.use(appsRouter);
 app.use(sessionsRouter);
 app.use(paymentConnectorsRouter);
+app.use(privacyRouter);
 app.use(walletRouter);
 app.use('/v1', authRouter);
 app.use('/v1', appsRouter);
 app.use('/v1', sessionsRouter);
 app.use('/v1', walletRouter);
 app.use('/v1', paymentConnectorsRouter);
+app.use('/v1', privacyRouter);
 app.use('/v2', authRouter);
 app.use('/v2', appsRouter);
 app.use('/v2', sessionsRouter);
 app.use('/v2', walletRouter);
 app.use('/v2', paymentConnectorsRouter);
+app.use('/v2', privacyRouter);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (error instanceof ZodError) {

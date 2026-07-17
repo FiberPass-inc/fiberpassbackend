@@ -11,10 +11,12 @@ import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { SessionModel, type SessionRecord } from '../models/session.model.js';
 import { writeAuditLog } from './audit.service.js';
 import { chargeSession } from './session.service.js';
+import { syncAutomationRecipientIdentity } from './recipientIdentity.service.js';
 import { enqueueWebhookEvent } from './webhook.service.js';
 
 type InvoiceDocument = any;
 type PaymentJobDocument = any;
+type RecipientDocument = ReturnType<typeof RecipientModel.hydrate>;
 
 
 export interface AutomationActor {
@@ -1089,18 +1091,32 @@ export async function createRecipient(actor: AutomationActor, input: CreateRecip
   validateRecipientAddress(input.serviceAddress);
 
   const recipientId = newRecipientId();
-  const record = await RecipientModel.create({
-    recipientId,
-    ownerWalletId: actor.ownerWalletId,
-    appId: actor.appId,
-    name: input.name.trim(),
-    serviceAddress: input.serviceAddress.trim(),
-    addressType: 'ckb',
-    externalId: cleanOptionalString(input.externalId),
-    invoiceEndpoint: cleanOptionalString(input.invoiceEndpoint),
-    status: 'active',
-    metadata: input.metadata
+  let record: RecipientDocument | undefined;
+  await RecipientModel.db.transaction(async (mongoSession) => {
+    const [created] = await RecipientModel.create([{
+      recipientId,
+      ownerWalletId: actor.ownerWalletId,
+      appId: actor.appId,
+      name: input.name.trim(),
+      serviceAddress: input.serviceAddress.trim(),
+      addressType: 'ckb',
+      externalId: cleanOptionalString(input.externalId),
+      invoiceEndpoint: cleanOptionalString(input.invoiceEndpoint),
+      status: 'active',
+      metadata: input.metadata
+    }], { session: mongoSession });
+    await syncAutomationRecipientIdentity({
+      recipientId,
+      ownerWalletId: actor.ownerWalletId,
+      name: created.name,
+      serviceAddress: created.serviceAddress,
+      invoiceEndpoint: created.invoiceEndpoint,
+      status: 'active',
+      session: mongoSession
+    });
+    record = created;
   });
+  if (!record) throw new ApiError(500, 'RECIPIENT_CREATE_FAILED', 'Recipient transaction completed without creating a recipient.');
 
   await writeAuditLog({
     actorWalletId: actor.ownerWalletId,
@@ -1145,15 +1161,26 @@ export async function updateRecipient(actor: AutomationActor, recipientId: strin
     throw new ApiError(400, 'RECIPIENT_UPDATE_EMPTY', 'At least one recipient field must be changed.');
   }
 
-  const recipient = await RecipientModel.findOneAndUpdate(
-    { recipientId, appId: actor.appId, ownerWalletId: actor.ownerWalletId, status: 'active' },
-    update,
-    { new: true }
-  );
-
-  if (!recipient) {
-    throw new ApiError(404, 'RECIPIENT_NOT_FOUND', 'Recipient was not found for this app.');
-  }
+  let recipient: RecipientDocument | undefined;
+  await RecipientModel.db.transaction(async (mongoSession) => {
+    const updated = await RecipientModel.findOneAndUpdate(
+      { recipientId, appId: actor.appId, ownerWalletId: actor.ownerWalletId, status: 'active' },
+      update,
+      { new: true, session: mongoSession }
+    );
+    if (!updated) throw new ApiError(404, 'RECIPIENT_NOT_FOUND', 'Recipient was not found for this app.');
+    await syncAutomationRecipientIdentity({
+      recipientId,
+      ownerWalletId: actor.ownerWalletId,
+      name: updated.name,
+      serviceAddress: updated.serviceAddress,
+      invoiceEndpoint: updated.invoiceEndpoint,
+      status: 'active',
+      session: mongoSession
+    });
+    recipient = updated;
+  });
+  if (!recipient) throw new ApiError(500, 'RECIPIENT_UPDATE_FAILED', 'Recipient transaction completed without updating a recipient.');
 
   await writeAuditLog({
     actorWalletId: actor.ownerWalletId,
@@ -1169,15 +1196,28 @@ export async function updateRecipient(actor: AutomationActor, recipientId: strin
 export async function disableRecipient(actor: AutomationActor, recipientId: string): Promise<RecipientDto> {
   await ensureActorApp(actor);
 
-  const recipient = await RecipientModel.findOneAndUpdate(
-    { recipientId, appId: actor.appId, ownerWalletId: actor.ownerWalletId, status: 'active' },
-    { $set: { status: 'disabled', disabledAt: new Date() } },
-    { new: true }
-  );
-
-  if (!recipient) {
-    throw new ApiError(404, 'RECIPIENT_NOT_FOUND', 'Active recipient was not found for this app.');
-  }
+  let recipient: RecipientDocument | undefined;
+  await RecipientModel.db.transaction(async (mongoSession) => {
+    const disabledAt = new Date();
+    const disabled = await RecipientModel.findOneAndUpdate(
+      { recipientId, appId: actor.appId, ownerWalletId: actor.ownerWalletId, status: 'active' },
+      { $set: { status: 'disabled', disabledAt } },
+      { new: true, session: mongoSession }
+    );
+    if (!disabled) throw new ApiError(404, 'RECIPIENT_NOT_FOUND', 'Active recipient was not found for this app.');
+    await syncAutomationRecipientIdentity({
+      recipientId,
+      ownerWalletId: actor.ownerWalletId,
+      name: disabled.name,
+      serviceAddress: disabled.serviceAddress,
+      invoiceEndpoint: disabled.invoiceEndpoint,
+      status: 'disabled',
+      disabledAt,
+      session: mongoSession
+    });
+    recipient = disabled;
+  });
+  if (!recipient) throw new ApiError(500, 'RECIPIENT_DISABLE_FAILED', 'Recipient transaction completed without disabling a recipient.');
 
   await writeAuditLog({
     actorWalletId: actor.ownerWalletId,

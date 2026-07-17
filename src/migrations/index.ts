@@ -7,6 +7,14 @@ import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { DomainEventModel } from '../models/domainEvent.model.js';
+import {
+  ClaimChannelModel,
+  NotificationEndpointModel,
+  PaymentDestinationModel,
+  RecipientClaimModel,
+  RecipientIdentityModel,
+  WalletPrincipalModel
+} from '../models/identity.model.js';
 import { MigrationModel } from '../models/migration.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
@@ -18,6 +26,7 @@ import { WorkerHeartbeatModel } from '../models/workerHeartbeat.model.js';
 import { WorkerLeaseModel } from '../models/workerLease.model.js';
 import { encryptWebhookSecret } from '../services/webhookSecurity.service.js';
 import { migrateLegacyMoneyToAtomicStrings } from './atomicMoney.js';
+import { migrateRecipientIdentitySeparation } from './identitySeparation.js';
 
 export interface MigrationDefinition {
   id: string;
@@ -38,6 +47,12 @@ const indexedModels = [
   ChargeAttemptModel,
   ChargeDailyCounterModel,
   DomainEventModel,
+  WalletPrincipalModel,
+  RecipientIdentityModel,
+  PaymentDestinationModel,
+  ClaimChannelModel,
+  NotificationEndpointModel,
+  RecipientClaimModel,
   MigrationModel,
   RateLimitBucketModel,
   SessionModel,
@@ -114,9 +129,26 @@ const migrateAtomicMoneyContracts: MigrationDefinition = {
   }
 };
 
+const separateRecipientIdentityData: MigrationDefinition = {
+  id: '005-separate-recipient-identity-data',
+  description: 'Separate wallet principals, recipients, payment destinations, and optional contact channels.',
+  async up() {
+    await migrateRecipientIdentitySeparation();
+    for (const model of [
+      WalletPrincipalModel,
+      RecipientIdentityModel,
+      PaymentDestinationModel,
+      ClaimChannelModel,
+      NotificationEndpointModel,
+      RecipientClaimModel
+    ]) await model.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
   createSecurityControlIndexes,
-  migrateAtomicMoneyContracts
+  migrateAtomicMoneyContracts,
+  separateRecipientIdentityData
 ];
