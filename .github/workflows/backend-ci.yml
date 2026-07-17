@@ -21,6 +21,7 @@ jobs:
       IDENTITY_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       FUNDING_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       NWC_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
+      SCHEDULE_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       BITCOIN_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       BITCOIN_CORE_REGTEST_TEST_MONGODB_URI: mongodb://127.0.0.1:27018/?replicaSet=rs0&directConnection=true
       BITCOIN_CORE_REGTEST_RPC_URL: http://127.0.0.1:18443
@@ -61,6 +62,7 @@ jobs:
       - run: npm run test:identity
       - run: npm run test:funding
       - run: npm run test:nwc
+      - run: npm run test:schedules
       - run: npm run test:bitcoin
       - run: npm run test:bitcoin-core-regtest
 

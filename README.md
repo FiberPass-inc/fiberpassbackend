@@ -34,6 +34,9 @@ and timeout reconciliation are documented in
 Self-hosted BTCPay pairing, receive and Lightning payment recovery, interactive
 Bitcoin PSBT signing, RBF, and Core deployment are documented in
 [docs/bitcoin-btcpay-psbt.md](docs/bitcoin-btcpay-psbt.md).
+Fresh-request schedules, calendar behavior, reusable resolver contracts,
+occurrence idempotency, and paused/revoked reconciliation are documented in
+[docs/scheduled-payments.md](docs/scheduled-payments.md).
 Recipient identity, single-use destination claims, reusable destination rules,
 and privacy deletion are documented in
 [docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
@@ -138,6 +141,11 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /recipient-claims/:token/destination-policy`
 - `POST /sessions/:id/recipient-invites/resend`
 - `POST /sessions/:id/recipient-claims/:claimId/revoke`
+- `POST /sessions/:id/payment-destinations`
+- `GET /sessions/:id/payment-schedules`
+- `POST /sessions/:id/payment-schedules`
+- `POST /payment-schedules/:id/control`
+- `POST /payment-schedules/sync`
 - `POST /sessions/:id/top-up`
 - `POST /sessions/:id/toggle-pause`
 - `POST /sessions/:id/revoke`
@@ -169,6 +177,7 @@ npm run build
 npm test
 npm run test:bitcoin
 npm run test:bitcoin-core-regtest
+npm run test:schedules
 ```
 
 The existing Mongoose duplicate-index warning is non-blocking test output; build and test exit codes must remain zero.

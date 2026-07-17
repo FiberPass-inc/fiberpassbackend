@@ -1,8 +1,11 @@
 export const PRINCIPAL_PROOF_TYPES = ['wallet_signature', 'legacy_authenticated_wallet'] as const;
 export type PrincipalProofType = (typeof PRINCIPAL_PROOF_TYPES)[number];
 
-export const DESTINATION_KINDS = ['address', 'invoice', 'endpoint'] as const;
+export const DESTINATION_KINDS = ['address', 'invoice', 'endpoint', 'bolt12_offer', 'lnurl', 'lightning_address'] as const;
 export type DestinationKind = (typeof DESTINATION_KINDS)[number];
+
+export const DESTINATION_RAILS = ['ckb_onchain', 'fiber', 'lightning', 'bitcoin_onchain'] as const;
+export type DestinationRail = (typeof DESTINATION_RAILS)[number];
 
 export const DESTINATION_STATUSES = ['active', 'replaced', 'revoked'] as const;
 export type DestinationStatus = (typeof DESTINATION_STATUSES)[number];
@@ -39,8 +42,9 @@ export interface Recipient {
 export interface PaymentDestination {
   destinationId: string;
   recipientId: string;
-  rail: 'ckb_onchain' | 'fiber';
+  rail: DestinationRail;
   network: string;
+  assetId: string;
   kind: DestinationKind;
   reusable: boolean;
   verificationMethod: DestinationVerificationMethod;

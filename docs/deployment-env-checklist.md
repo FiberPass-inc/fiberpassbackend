@@ -33,6 +33,10 @@ Vault funds and signing:
 - `NWC_REQUEST_TIMEOUT_MS`: bounded NIP-47 relay/wallet request timeout.
 - `NWC_ALLOW_INSECURE_LOCAL_RELAY=false`: keep disabled outside local regtest
   development; production accepts public `wss://` relays only.
+- `SCHEDULE_RESOLVER_TIMEOUT_MS`: bounded timeout for LNURL, Lightning Address,
+  BOLT12 adapter, recipient, and Fiber endpoint resolution.
+- `SCHEDULE_ALLOW_INSECURE_LOCAL_RESOLVERS=false`: keep disabled outside local
+  regtest; production resolvers must use public HTTPS destinations.
 
 Fiber node infrastructure:
 

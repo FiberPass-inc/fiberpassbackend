@@ -575,6 +575,7 @@ export async function payNwcInvoice(input: {
   ownerWalletId: string;
   invoice: string;
   idempotencyKey: string;
+  executionMode?: NwcExecutionMode;
 }): Promise<NwcPaymentDto> {
   const connection = await NwcConnectionModel.findOne({
     connectionId: input.connectionId,
@@ -583,7 +584,21 @@ export async function payNwcInvoice(input: {
   }).lean<NwcConnectionRecord | null>();
   if (!connection) throw new ApiError(404, 'NWC_CONNECTION_NOT_FOUND', 'Active NWC connection was not found.');
   if (!connection.methods.includes('pay_invoice')) throw new ApiError(409, 'NWC_CAPABILITY_NOT_ADVERTISED', 'NWC wallet did not advertise pay_invoice.');
+  const executionMode = input.executionMode ?? 'interactive';
+  if (executionMode === 'unattended' && (
+    connection.executionMode !== 'unattended'
+    || !connection.allowanceEnforced
+    || !connection.allowanceProofEventId
+  )) {
+    throw new ApiError(409, 'NWC_UNATTENDED_ALLOWANCE_REQUIRED', 'Cloud unattended execution requires a wallet-enforced allowance proof.');
+  }
   const invoice = decodeLightningInvoice({ invoice: input.invoice, network: connection.network });
+  if (executionMode === 'unattended') {
+    const remaining = parseAtomicAmount(connection.allowanceAtomic) - parseAtomicAmount(connection.allowanceUsedAtomic);
+    if (remaining < parseAtomicAmount(invoice.amountAtomic)) {
+      throw new ApiError(409, 'NWC_UNATTENDED_ALLOWANCE_INSUFFICIENT', 'Wallet-enforced NWC allowance is below this payment amount.');
+    }
+  }
   const fingerprint = paymentFingerprint({
     ownerWalletId: input.ownerWalletId,
     connectionId: input.connectionId,
@@ -604,6 +619,9 @@ export async function payNwcInvoice(input: {
   if (existing) {
     if (existing.requestFingerprint !== fingerprint) {
       throw new ApiError(409, 'NWC_IDEMPOTENCY_CONFLICT', 'NWC idempotency key or invoice was already used for another payment request.');
+    }
+    if (existing.executionMode !== executionMode) {
+      throw new ApiError(409, 'NWC_EXECUTION_MODE_CONFLICT', 'NWC idempotency key was already used with another execution mode.');
     }
     if (existing.status === 'succeeded') return toPaymentDto(existing);
     if (existing.status === 'failed') throw new ApiError(409, existing.failureCode ?? 'NWC_PAYMENT_FAILED', existing.failureMessage ?? 'NWC payment already failed.');
@@ -628,7 +646,7 @@ export async function payNwcInvoice(input: {
       amountAtomic: invoice.amountAtomic,
       feeAtomic: '0',
       status: 'pending',
-      executionMode: 'interactive',
+      executionMode,
       executionLeaseId: leaseId,
       executionLeaseExpiresAt: new Date(Date.now() + PAYMENT_LEASE_MS)
     });
@@ -638,6 +656,7 @@ export async function payNwcInvoice(input: {
     existing = await NwcPaymentModel.findOne({ ownerWalletId: input.ownerWalletId, paymentHash: invoice.paymentHash }).lean<NwcPaymentRecord | null>();
     if (!existing) throw new ApiError(409, 'NWC_PAYMENT_DUPLICATE', 'NWC payment request is already being processed.');
     if (existing.requestFingerprint !== fingerprint) throw new ApiError(409, 'NWC_IDEMPOTENCY_CONFLICT', 'NWC invoice is already assigned to another request.');
+    if (existing.executionMode !== executionMode) throw new ApiError(409, 'NWC_EXECUTION_MODE_CONFLICT', 'NWC idempotency key was already used with another execution mode.');
     if (existing.status === 'succeeded' || paymentExecutionInFlight(existing)) return toPaymentDto(existing);
     return reconcilePayment(existing);
   }
@@ -658,7 +677,7 @@ export async function payNwcInvoice(input: {
   try {
     const result = await nwcConnector.execute(intent, quote, {
       ownerWalletId: input.ownerWalletId,
-      metadata: { nwcConnectionId: input.connectionId, nwcExecutionMode: 'interactive' }
+      metadata: { nwcConnectionId: input.connectionId, nwcExecutionMode: executionMode }
     });
     const persisted = await persistNwcSuccess(paymentId, result, false);
     await writeAuditLog({

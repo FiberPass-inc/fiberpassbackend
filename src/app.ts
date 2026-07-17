@@ -17,12 +17,14 @@ import { paymentConnectorsRouter } from './routes/paymentConnectors.routes.js';
 import { bitcoinRouter } from './routes/bitcoin.routes.js';
 import { nwcRouter } from './routes/nwc.routes.js';
 import { privacyRouter } from './routes/privacy.routes.js';
+import { paymentSchedulesRouter } from './routes/paymentSchedules.routes.js';
 import { walletRouter } from './routes/wallet.routes.js';
 import { runPaymentWorkerOnce } from './services/automation.service.js';
 import { runReconciliationWorkerOnce } from './services/reconciliation.service.js';
 import { runDueSessionPayouts, runScheduledLiquidityPreparation } from './services/session.service.js';
 import { runWebhookWorkerOnce } from './services/webhook.service.js';
 import { getWorkerReadiness } from './services/workerRuntime.service.js';
+import { runDuePaymentSchedules } from './services/paymentSchedule.service.js';
 
 let mongoConnectionPromise: Promise<typeof mongoose> | undefined;
 
@@ -51,6 +53,10 @@ function verifyCronRequest(request: Request): boolean {
 }
 
 async function runPaymentCron() {
+  const freshRequestSchedules = await runDuePaymentSchedules({
+    workerId: 'vercel-cron-scheduled-payment-worker',
+    limit: env.PAYMENT_WORKER_BATCH_SIZE
+  });
   const liquidityPreparation = await runScheduledLiquidityPreparation({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
   const scheduledPayouts = await runDueSessionPayouts({ limit: env.PAYMENT_WORKER_BATCH_SIZE });
   const automationPayments = await runPaymentWorkerOnce({
@@ -65,7 +71,7 @@ async function runPaymentCron() {
     workerId: 'vercel-cron-reconciliation-worker',
     limit: env.PAYMENT_WORKER_BATCH_SIZE
   });
-  return { liquidityPreparation, scheduledPayouts, automationPayments, webhookDeliveries, reconciliation };
+  return { freshRequestSchedules, liquidityPreparation, scheduledPayouts, automationPayments, webhookDeliveries, reconciliation };
 }
 
 export const app = express();
@@ -191,6 +197,7 @@ app.use(paymentConnectorsRouter);
 app.use(bitcoinRouter);
 app.use(nwcRouter);
 app.use(privacyRouter);
+app.use(paymentSchedulesRouter);
 app.use(walletRouter);
 app.use('/v1', authRouter);
 app.use('/v1', appsRouter);
@@ -200,6 +207,7 @@ app.use('/v1', paymentConnectorsRouter);
 app.use('/v1', bitcoinRouter);
 app.use('/v1', nwcRouter);
 app.use('/v1', privacyRouter);
+app.use('/v1', paymentSchedulesRouter);
 app.use('/v2', authRouter);
 app.use('/v2', appsRouter);
 app.use('/v2', sessionsRouter);
@@ -208,6 +216,7 @@ app.use('/v2', paymentConnectorsRouter);
 app.use('/v2', bitcoinRouter);
 app.use('/v2', nwcRouter);
 app.use('/v2', privacyRouter);
+app.use('/v2', paymentSchedulesRouter);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (error instanceof ZodError) {
