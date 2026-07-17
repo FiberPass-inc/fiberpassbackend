@@ -44,6 +44,10 @@ A restore is not complete until document counts, unique indexes, worker leases, 
 Rotate one key class at a time and take a snapshot first.
 
 - `WEBHOOK_SECRET_ENCRYPTION_KEY`: deploy dual-decrypt support before changing this key, re-encrypt every app secret, verify sample HMACs, then remove the old key. Never replace it directly while encrypted secrets still depend on it.
+- `NWC_SECRET_ENCRYPTION_KEY`: treat rotation as a credential migration. Deploy
+  dual-decrypt support, re-encrypt every active NWC connection, verify only
+  non-secret fingerprints, and then retire the old key. Replacing it directly
+  disables every stored connection.
 - App webhook signing secret: update the consumer secret manager and FiberPass configuration in a coordinated window. New attempts use the current app-level secret.
 - `FIBERPASS_OPERATOR_PRIVATE_KEY`: pause vault payout workers, move authority on chain/configuration, update the operator lock hash and signer secret, run a bounded testnet payout, then resume.
 - `FIBER_NODE_CKB_PRIVATE_KEY` and `FIBER_EXIT_SETTLEMENT_PRIVATE_KEY`: drain or pause Fiber/exit operations, rotate the corresponding funding/settlement identity, verify address and lock-hash configuration, then restore traffic.

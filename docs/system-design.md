@@ -1,9 +1,10 @@
 # FiberPass System Design
 
 FiberPass is wallet-connected payment infrastructure for prepaid, revocable
-payment sessions. The current implementation is CKB/Fiber-specific; the
-Bitcoin and Lightning connector work in [`TASKS.md`](../TASKS.md) is planned, not yet
-implemented.
+payment sessions. The current implementation supports CKB/Fiber and scoped
+connections to existing Lightning wallets through Nostr Wallet Connect. Further
+Bitcoin connectors, recurring orchestration, and stablecoin work in
+[`TASKS.md`](../TASKS.md) remain planned.
 
 The core idea is simple: a user approves a capped payment pass once, then FiberPass handles balance reservation, Fiber liquidity preparation, payment execution, settlement tracking, and receipts.
 

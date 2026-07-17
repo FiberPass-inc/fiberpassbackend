@@ -28,6 +28,9 @@ The exact atomic-unit API contract and v1 migration behavior are documented in
 [docs/api-money-contract-v2.md](docs/api-money-contract-v2.md).
 Connector selection, capability discovery, and provider error isolation are
 documented in [docs/payment-connectors.md](docs/payment-connectors.md).
+Existing-wallet Lightning pairing, NIP-47 allowance rules, invoice validation,
+and timeout reconciliation are documented in
+[docs/nwc-lightning.md](docs/nwc-lightning.md).
 Recipient identity, single-use destination claims, reusable destination rules,
 and privacy deletion are documented in
 [docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
@@ -41,6 +44,7 @@ and privacy deletion are documented in
 - Exact atomic-unit string contracts with checked `bigint` arithmetic; numeric
   minor-unit fields remain only as the CKB/Fiber v1 compatibility projection
 - Fiber Network JSON-RPC provider only
+- Nostr Wallet Connect for externally owned Bitcoin Lightning wallets
 - Rate limiting, audit logs, request IDs, and production env validation
 
 ## Run Locally
@@ -97,6 +101,12 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `GET /wallet/funding`
 - `GET /wallet/funding-sources`
 - `GET /wallet/vault-recovery`
+- `GET /wallet/nwc-connections`
+- `POST /wallet/nwc-connections`
+- `POST /wallet/nwc-connections/:connectionId/balance/sync`
+- `POST /wallet/nwc-connections/:connectionId/payments`
+- `GET /wallet/nwc-connections/:connectionId/payments/:paymentHash`
+- `DELETE /wallet/nwc-connections/:connectionId`
 - `POST /wallet/funding`
 - `POST /wallet/funding/sync`
 - `POST /wallet/funding/:fundingId/confirm`

@@ -28,6 +28,11 @@ Vault funds and signing:
 - `FIBERPASS_OPERATOR_LOCK_HASH`
 - `FIBERPASS_OPERATOR_PRIVATE_KEY`
 - `WEBHOOK_SECRET_ENCRYPTION_KEY`: stable 32-byte hex/base64 key; required before webhook configuration or migration.
+- `NWC_SECRET_ENCRYPTION_KEY`: separate stable 32-byte hex/base64 key for NWC
+  credentials; required before pairing Lightning wallets.
+- `NWC_REQUEST_TIMEOUT_MS`: bounded NIP-47 relay/wallet request timeout.
+- `NWC_ALLOW_INSECURE_LOCAL_RELAY=false`: keep disabled outside local regtest
+  development; production accepts public `wss://` relays only.
 
 Fiber node infrastructure:
 

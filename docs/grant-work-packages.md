@@ -10,7 +10,9 @@ This package covers chain-neutral money contracts, the connector registry,
 Nostr Wallet Connect with wallet-enforced limits, self-hosted BTCPay, interactive
 Bitcoin PSBTs, fresh Lightning request resolution, repeatable schedules,
 metered micropayments, neutral receipts, and reproducible regtest/signet proof.
-It does not claim that these planned connectors already exist.
+Nostr Wallet Connect is implemented for externally owned Lightning wallets with
+mock-relay regression evidence. BTCPay, PSBT, scheduling, stablecoin, and live
+signet evidence remain planned and must not be inferred from that connector.
 
 ## CKB And Fiber
 

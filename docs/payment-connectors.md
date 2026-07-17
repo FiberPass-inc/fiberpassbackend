@@ -28,7 +28,7 @@ use `PaymentIntent` and exact atomic strings; outputs use `PaymentQuote` and
 `PaymentResult`. Provider-specific secrets and raw RPC responses are not part of
 those contracts.
 
-The current `FiberConnector` advertises:
+The current connectors advertise:
 
 - `fiber` + configured CKB network + `ckb:ckb`, for signed Fiber invoices and
   explicitly configured endpoints;
@@ -38,6 +38,14 @@ The current `FiberConnector` advertises:
 It contains Fiber invoice parsing, signature/expiry/network/amount checks, CKB
 address and cell-minimum checks, node readiness access, payment execution, proof
 normalization, and payment-hash lookup.
+
+`NwcConnector` advertises `lightning` + `bitcoin:btc` for mainnet, testnet,
+signet, and regtest. It validates amount-bearing BOLT11 invoices, executes only
+wallet-advertised NIP-47 methods, verifies preimages, and performs
+payment-hash lookup before any retry after an uncertain outcome. Its funding
+mode is `connected_wallet`: the external wallet retains funds and enforcement.
+See [nwc-lightning.md](nwc-lightning.md) for pairing, allowance, storage, and
+disconnect guarantees.
 
 ## Capability Discovery
 

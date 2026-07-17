@@ -71,13 +71,33 @@ try {
     .set('Authorization', 'Bearer ' + token)
     .expect(200);
   assert.equal(connectorCapabilities.body.contractVersion, '2.0');
+  const capabilities = connectorCapabilities.body.capabilities as Array<{
+    connectorId: string;
+    rail: string;
+    network: string;
+    assetId: string;
+    supportsLookup: boolean;
+    funding: Array<{ mode: string; requiresNetworkProof: boolean }>;
+  }>;
   assert.deepEqual(
-    connectorCapabilities.body.capabilities.map((capability: { rail: string }) => capability.rail).sort(),
-    ['ckb_onchain', 'fiber']
+    capabilities.map((capability) => capability.rail).sort(),
+    ['ckb_onchain', 'fiber', 'lightning', 'lightning', 'lightning', 'lightning']
   );
-  assert.ok(connectorCapabilities.body.capabilities.every((capability: { funding?: unknown[] }) => Array.isArray(capability.funding)));
+  assert.deepEqual(
+    capabilities
+      .filter((capability) => capability.connectorId === 'nwc-nip47')
+      .map((capability) => capability.network)
+      .sort(),
+    ['mainnet', 'regtest', 'signet', 'testnet']
+  );
+  assert.ok(capabilities
+    .filter((capability) => capability.connectorId === 'nwc-nip47')
+    .every((capability) => capability.assetId === 'bitcoin:btc' && capability.supportsLookup));
+  assert.ok(capabilities.every((capability) => Array.isArray(capability.funding)));
+  const fiberCapability = capabilities.find((capability) => capability.connectorId === 'fiber-rpc');
+  assert.ok(fiberCapability);
   assert.equal(
-    connectorCapabilities.body.capabilities[0].funding.find((funding: { mode: string }) => funding.mode === 'secured_autopay').requiresNetworkProof,
+    fiberCapability.funding.find((funding) => funding.mode === 'secured_autopay')?.requiresNetworkProof,
     true
   );
   const fundingSources = await request(app)
