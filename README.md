@@ -12,6 +12,13 @@ See [docs/system-design.md](docs/system-design.md) for the full FiberPass archit
 
 See [docs/vault-recovery.md](docs/vault-recovery.md) for JoyID-bound vault ownership, owner-signed reclaim handoff, legacy synthetic-vault migration, and lifecycle transaction guarantees.
 
+The proposed constrained per-pass CKB vault v2 specification, threat model,
+and pending maintainer review are in
+[docs/ckb-per-pass-vault-v2-spec.md](docs/ckb-per-pass-vault-v2-spec.md),
+[docs/ckb-per-pass-vault-v2-threat-model.md](docs/ckb-per-pass-vault-v2-threat-model.md),
+and
+[docs/ckb-per-pass-vault-v2-maintainer-review.md](docs/ckb-per-pass-vault-v2-maintainer-review.md).
+
 See [docs/funding-sources-and-guarantees.md](docs/funding-sources-and-guarantees.md) for connected-wallet and secured auto-pay modes, exact accounting invariants, proof freshness, source states, API fields, and conservative legacy migration.
 
 See [docs/worker-reliability.md](docs/worker-reliability.md) for the required API/payment/reconciliation/webhook services, durable live events, heartbeats, locks, and delivery guarantees.

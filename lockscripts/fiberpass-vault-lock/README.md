@@ -1,5 +1,11 @@
 # FiberPass Vault Lock
 
+This directory remains the unaudited testnet v1 draft. It does not implement
+the constrained per-pass v2 policy and must not receive production or mainnet
+funds. The v2 specification and threat model are in
+../../docs/ckb-per-pass-vault-v2-spec.md and
+../../docs/ckb-per-pass-vault-v2-threat-model.md.
+
 Rust draft for a CKB lock script that holds user vault funds on testnet.
 
 ## Purpose
