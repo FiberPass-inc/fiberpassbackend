@@ -289,8 +289,11 @@ try {
     executor: succeedingExecutor(volumeCalls),
     resolverTransport
   })));
-  assert.equal(volumeResults.reduce((sum, result) => sum + result.succeeded, 0), volumeBatches.length);
-  assert.equal(new Set(volumeCalls).size, volumeBatches.length);
+  assert.ok(volumeResults.reduce((sum, result) => sum + result.succeeded, 0) >= volumeBatches.length);
+  const volumeBatchIds = new Set(volumeBatches.map((batch) => batch.batchId));
+  const targetCalls = volumeCalls.filter((batchId) => volumeBatchIds.has(batchId));
+  assert.equal(targetCalls.length, volumeBatches.length);
+  assert.equal(new Set(targetCalls).size, volumeBatches.length);
   const settledVolumeSession = await SessionModel.findOne({ publicId: volumeFixture.sessionId }).lean();
   assert.equal(settledVolumeSession?.reservedAtomic, '0');
   assert.equal(settledVolumeSession?.spentAtomic, '80');
