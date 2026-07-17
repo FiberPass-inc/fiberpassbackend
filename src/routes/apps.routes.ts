@@ -9,6 +9,14 @@ import { requireAuth } from '../middleware/auth.middleware.js';
 import { APP_API_KEY_SCOPES } from '../models/app.model.js';
 import { configureAppWebhook, createAppApiKey, createDeveloperApp, listAppChargeAttempts, listDeveloperApps, revokeAppApiKey } from '../services/app.service.js';
 import { createInvoice, createInvoiceBatch, createRecipient, disableRecipient, listInvoices, listPaymentBatches, listPaymentJobs, listRecipients, queueInvoice, queueInvoiceBatch, updateRecipient, type AutomationActor } from '../services/automation.service.js';
+import {
+  createMeteredGrant,
+  listMeteredBatches,
+  listMeteredGrants,
+  listUsageEvents,
+  revokeMeteredGrant,
+  submitUsageEvent
+} from '../services/meteredPayment.service.js';
 import { chargeSession } from '../services/session.service.js';
 import { listWebhookDeliveries } from '../services/webhook.service.js';
 import type { AppAuthenticatedRequest } from '../types/appAuth.js';
@@ -34,7 +42,8 @@ const paramsSchema = z.object({
   keyId: z.string().trim().min(1).optional(),
   recipientId: z.string().trim().min(1).optional(),
   invoiceId: z.string().trim().min(1).optional(),
-  batchId: z.string().trim().min(1).optional()
+  batchId: z.string().trim().min(1).optional(),
+  grantId: z.string().trim().min(1).optional()
 });
 
 const chargeSchema = z.object({
@@ -91,6 +100,41 @@ const invoiceBatchSchema = z.object({
 
 const invoiceQuerySchema = z.object({
   sessionId: z.string().trim().min(1).optional()
+});
+
+const atomicAmountSchema = z.string().regex(/^(0|[1-9]\d*)$/).max(78);
+
+const meteredGrantSchema = z.object({
+  sessionId: z.string().trim().min(1).max(160),
+  recipientId: z.string().trim().min(1).max(160),
+  destinationId: z.string().trim().min(1).max(160),
+  rail: z.enum(['lightning', 'fiber']),
+  network: z.string().trim().min(1).max(80),
+  assetId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,31}:[a-z0-9][a-z0-9._:-]{0,127}$/),
+  executor: z.enum(['nwc', 'btcpay', 'fiber']),
+  connectionId: z.string().trim().min(1).max(160).optional(),
+  maxPerEventAtomic: atomicAmountSchema.refine((value) => value !== '0'),
+  totalLimitAtomic: atomicAmountSchema.refine((value) => value !== '0'),
+  rateLimitCount: z.coerce.number().int().min(1).max(100000),
+  rateLimitWindowSeconds: z.coerce.number().int().min(1).max(86400),
+  immediateThresholdAtomic: atomicAmountSchema.refine((value) => value !== '0'),
+  maxBatchAtomic: atomicAmountSchema.refine((value) => value !== '0'),
+  maxBatchEvents: z.coerce.number().int().min(1).max(1000),
+  settlementDelayMs: z.coerce.number().int().min(0).max(3600000),
+  expiresAt: z.string().datetime()
+}).strict();
+
+const usageEventSchema = z.object({
+  grantId: z.string().trim().min(1).max(160),
+  externalId: z.string().trim().min(1).max(200),
+  amountAtomic: atomicAmountSchema.refine((value) => value !== '0'),
+  type: z.string().trim().min(1).max(120).optional(),
+  policyReference: z.string().trim().min(1).max(200).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+}).strict();
+
+const meteredQuerySchema = z.object({
+  grantId: z.string().trim().min(1).max(160).optional()
 });
 
 const webhookSchema = z.object({
@@ -251,6 +295,40 @@ appsRouter.post('/apps/:appId/invoice-batches/:batchId/queue', requireAuth, asyn
   response.json(await queueInvoiceBatch(walletAutomationActor(request, appId), batchId ?? ''));
 }));
 
+appsRouter.get('/apps/:appId/metered-grants', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  response.json(await listMeteredGrants(walletAutomationActor(request, appId)));
+}));
+
+appsRouter.post('/apps/:appId/metered-grants', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const payload = meteredGrantSchema.parse(request.body ?? {});
+  response.status(201).json(await createMeteredGrant(walletAutomationActor(request, appId), payload));
+}));
+
+appsRouter.post('/apps/:appId/metered-grants/:grantId/revoke', requireAuth, asyncHandler(async (request, response) => {
+  const { appId, grantId } = paramsSchema.parse(request.params);
+  response.json(await revokeMeteredGrant(walletAutomationActor(request, appId), grantId ?? ''));
+}));
+
+appsRouter.post('/apps/:appId/usage-events', appChargeRateLimit, requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const payload = usageEventSchema.parse(request.body ?? {});
+  response.status(201).json(await submitUsageEvent(walletAutomationActor(request, appId), payload));
+}));
+
+appsRouter.get('/apps/:appId/usage-events', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const query = meteredQuerySchema.parse(request.query ?? {});
+  response.json(await listUsageEvents(walletAutomationActor(request, appId), query.grantId));
+}));
+
+appsRouter.get('/apps/:appId/metered-batches', requireAuth, asyncHandler(async (request, response) => {
+  const { appId } = paramsSchema.parse(request.params);
+  const query = meteredQuerySchema.parse(request.query ?? {});
+  response.json(await listMeteredBatches(walletAutomationActor(request, appId), query.grantId));
+}));
+
 appsRouter.get('/apps/:appId/automation/invoices', requireAppApiKeyWithScopes(['invoices:create']), asyncHandler(async (request, response) => {
   const query = invoiceQuerySchema.parse(request.query ?? {});
   response.json(await listInvoices(appKeyAutomationActor(request), query.sessionId));
@@ -284,6 +362,25 @@ appsRouter.post('/apps/:appId/automation/invoices/:invoiceId/queue', requireAppA
 appsRouter.post('/apps/:appId/automation/invoice-batches/:batchId/queue', requireAppApiKeyWithScopes(['payments:queue']), asyncHandler(async (request, response) => {
   const { batchId } = paramsSchema.parse(request.params);
   response.json(await queueInvoiceBatch(appKeyAutomationActor(request), batchId ?? ''));
+}));
+
+appsRouter.get('/apps/:appId/automation/metered-grants', requireAppApiKeyWithScopes(['payments:charge']), asyncHandler(async (request, response) => {
+  response.json(await listMeteredGrants(appKeyAutomationActor(request)));
+}));
+
+appsRouter.post('/apps/:appId/automation/usage-events', appChargeRateLimit, requireAppApiKeyWithScopes(['payments:charge']), asyncHandler(async (request, response) => {
+  const payload = usageEventSchema.parse(request.body ?? {});
+  response.status(201).json(await submitUsageEvent(appKeyAutomationActor(request), payload));
+}));
+
+appsRouter.get('/apps/:appId/automation/usage-events', requireAppApiKeyWithScopes(['payments:charge']), asyncHandler(async (request, response) => {
+  const query = meteredQuerySchema.parse(request.query ?? {});
+  response.json(await listUsageEvents(appKeyAutomationActor(request), query.grantId));
+}));
+
+appsRouter.get('/apps/:appId/automation/metered-batches', requireAppApiKeyWithScopes(['payments:charge']), asyncHandler(async (request, response) => {
+  const query = meteredQuerySchema.parse(request.query ?? {});
+  response.json(await listMeteredBatches(appKeyAutomationActor(request), query.grantId));
 }));
 
 appsRouter.get('/apps/:appId/charges', requireAuth, asyncHandler(async (request, response) => {

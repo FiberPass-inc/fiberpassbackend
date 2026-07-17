@@ -21,6 +21,12 @@ import { MigrationModel } from '../models/migration.model.js';
 import { NwcConnectionModel, NwcPaymentModel } from '../models/nwc.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { PaymentScheduleModel, ScheduledOccurrenceModel } from '../models/schedule.model.js';
+import {
+  MeteredBatchModel,
+  MeteredGrantModel,
+  MeteredRateCounterModel,
+  UsageEventModel
+} from '../models/meteredPayment.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { WalletModel } from '../models/wallet.model.js';
@@ -70,6 +76,10 @@ const indexedModels = [
   RateLimitBucketModel,
   PaymentScheduleModel,
   ScheduledOccurrenceModel,
+  MeteredGrantModel,
+  UsageEventModel,
+  MeteredBatchModel,
+  MeteredRateCounterModel,
   SessionModel,
   StreamTicketModel,
   WalletModel,
@@ -204,6 +214,17 @@ const createScheduledPaymentModels: MigrationDefinition = {
   }
 };
 
+const createMeteredPaymentModels: MigrationDefinition = {
+  id: '010-create-metered-payment-models',
+  description: 'Create immutable usage-event, owner-bound grant, rate-counter, and homogeneous batch indexes.',
+  async up() {
+    await MeteredGrantModel.createIndexes();
+    await UsageEventModel.createIndexes();
+    await MeteredBatchModel.createIndexes();
+    await MeteredRateCounterModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
@@ -213,5 +234,6 @@ export const migrations: readonly MigrationDefinition[] = [
   modelFundingSources,
   createNwcConnectionModels,
   createBitcoinConnectorModels,
-  createScheduledPaymentModels
+  createScheduledPaymentModels,
+  createMeteredPaymentModels
 ];

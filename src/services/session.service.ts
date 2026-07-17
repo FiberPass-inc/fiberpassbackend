@@ -2673,7 +2673,7 @@ function safeFiberPaymentRequestHash(paymentRequest?: string): string | undefine
 
 function providerChargeFromConnectorResult(
   result: PaymentResult,
-  executionLayer: 'fiber' | 'ckb-vault',
+  executionLayer: 'fiber' | 'lightning' | 'ckb-vault',
   paymentRequestHash?: string
 ): ProviderChargeResult {
   if (result.status !== 'succeeded' || !result.proof?.reference) {
@@ -2696,7 +2696,7 @@ export function chargeRequestFingerprint(input: {
   appId?: string;
   serviceReference?: string;
   paymentRequestHash?: string;
-  executionLayer: 'fiber' | 'ckb-vault';
+  executionLayer: 'fiber' | 'lightning' | 'ckb-vault';
   recipientAddress?: string;
   providerTarget?: string;
 }): string {

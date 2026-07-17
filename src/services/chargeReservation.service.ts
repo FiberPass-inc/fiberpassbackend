@@ -29,7 +29,7 @@ export interface ReserveChargeAttemptInput {
   amountMinor: number;
   currency: string;
   type: string;
-  executionLayer: 'fiber' | 'ckb-vault';
+  executionLayer: 'fiber' | 'lightning' | 'ckb-vault';
   paymentRequestHash?: string;
   providerCorrelationId?: string;
   metadata?: Record<string, unknown>;
@@ -283,7 +283,7 @@ export interface ProviderChargeResult {
   network: string;
   proofId: string;
   proofType: string;
-  executionLayer: 'fiber' | 'ckb-vault';
+  executionLayer: 'fiber' | 'lightning' | 'ckb-vault';
   paymentRequestHash?: string;
 }
 
