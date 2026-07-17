@@ -17,6 +17,7 @@ import {
   WalletPrincipalModel
 } from '../models/identity.model.js';
 import { MigrationModel } from '../models/migration.model.js';
+import { NwcConnectionModel, NwcPaymentModel } from '../models/nwc.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
@@ -58,6 +59,8 @@ const indexedModels = [
   NotificationEndpointModel,
   RecipientClaimModel,
   MigrationModel,
+  NwcConnectionModel,
+  NwcPaymentModel,
   RateLimitBucketModel,
   SessionModel,
   StreamTicketModel,
@@ -159,11 +162,21 @@ const modelFundingSources: MigrationDefinition = {
   }
 };
 
+const createNwcConnectionModels: MigrationDefinition = {
+  id: '007-create-nwc-connection-models',
+  description: 'Create encrypted scoped NWC connection and exact Lightning payment indexes.',
+  async up() {
+    await NwcConnectionModel.createIndexes();
+    await NwcPaymentModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
   createSecurityControlIndexes,
   migrateAtomicMoneyContracts,
   separateRecipientIdentityData,
-  modelFundingSources
+  modelFundingSources,
+  createNwcConnectionModels
 ];

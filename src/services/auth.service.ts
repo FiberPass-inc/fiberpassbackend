@@ -10,6 +10,7 @@ import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { FundingAllocationModel, FundingSourceModel } from '../models/fundingSource.model.js';
+import { NwcConnectionModel, NwcPaymentModel } from '../models/nwc.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel } from '../models/wallet.model.js';
@@ -126,18 +127,20 @@ async function recoverLegacyJoyIdWallet(input: {
   const targetWalletId = input.targetWallet.walletId;
   if (legacyWalletId === targetWalletId) return input.targetWallet;
 
-  const [legacyWalletExists, fundingCount, sourceCount, allocationCount, sessionCount, chargeAttemptCount, appCount, apiKeyCount] = await Promise.all([
+  const [legacyWalletExists, fundingCount, sourceCount, allocationCount, nwcConnectionCount, nwcPaymentCount, sessionCount, chargeAttemptCount, appCount, apiKeyCount] = await Promise.all([
     WalletModel.exists({ walletId: legacyWalletId }),
     WalletFundingModel.countDocuments({ walletId: legacyWalletId }),
     FundingSourceModel.countDocuments({ ownerWalletId: legacyWalletId }),
     FundingAllocationModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    NwcConnectionModel.countDocuments({ ownerWalletId: legacyWalletId }),
+    NwcPaymentModel.countDocuments({ ownerWalletId: legacyWalletId }),
     SessionModel.countDocuments({ ownerWalletId: legacyWalletId }),
     ChargeAttemptModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppModel.countDocuments({ ownerWalletId: legacyWalletId }),
     AppApiKeyModel.countDocuments({ ownerWalletId: legacyWalletId })
   ]);
 
-  if (!legacyWalletExists && fundingCount + sourceCount + allocationCount + sessionCount + chargeAttemptCount + appCount + apiKeyCount === 0) {
+  if (!legacyWalletExists && fundingCount + sourceCount + allocationCount + nwcConnectionCount + nwcPaymentCount + sessionCount + chargeAttemptCount + appCount + apiKeyCount === 0) {
     return input.targetWallet;
   }
 
@@ -168,13 +171,23 @@ async function recoverLegacyJoyIdWallet(input: {
     );
   }
 
-  const [fundingResult, sourceResult, allocationResult, sessionResult, chargeAttemptResult, appResult, apiKeyResult, authSessionResult] = await Promise.all([
+  const [fundingResult, sourceResult, allocationResult, nwcConnectionResult, nwcPaymentResult, sessionResult, chargeAttemptResult, appResult, apiKeyResult, authSessionResult] = await Promise.all([
     WalletFundingModel.updateMany(
       { walletId: legacyWalletId, status: 'confirmed' },
       { $set: { walletId: targetWalletId, walletAddress: input.targetAddress } }
     ),
     FundingSourceModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     FundingAllocationModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
+    NwcConnectionModel.collection.updateMany(
+      { ownerWalletId: legacyWalletId },
+      [{
+        $set: {
+          ownerWalletId: targetWalletId,
+          scopeId: { $cond: [{ $eq: ['$scopeType', 'wallet'] }, targetWalletId, '$scopeId'] }
+        }
+      }]
+    ),
+    NwcPaymentModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     SessionModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     ChargeAttemptModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
     AppModel.updateMany({ ownerWalletId: legacyWalletId }, { $set: { ownerWalletId: targetWalletId } }),
@@ -188,6 +201,8 @@ async function recoverLegacyJoyIdWallet(input: {
     funding: modifiedCount(fundingResult),
     fundingSources: modifiedCount(sourceResult),
     fundingAllocations: modifiedCount(allocationResult),
+    nwcConnections: modifiedCount(nwcConnectionResult),
+    nwcPayments: modifiedCount(nwcPaymentResult),
     sessions: modifiedCount(sessionResult),
     chargeAttempts: modifiedCount(chargeAttemptResult),
     apps: modifiedCount(appResult),

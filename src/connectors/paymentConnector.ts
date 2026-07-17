@@ -32,6 +32,8 @@ export interface ConnectorLookupInput {
   network: string;
   assetId: AssetId;
   reference: string;
+  ownerWalletId?: string;
+  connectionId?: string;
 }
 
 export interface ConnectorRefundInput {

@@ -72,6 +72,9 @@ const envSchema = z.object({
   WORKER_LEASE_TTL_MS: z.coerce.number().int().positive().default(60000),
   WEBHOOK_DELIVERY_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
   WEBHOOK_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
+  NWC_SECRET_ENCRYPTION_KEY: z.string().optional().default(''),
+  NWC_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
+  NWC_ALLOW_INSECURE_LOCAL_RELAY: booleanFromEnv.default(false),
   CRON_SECRET: z.string().optional().default(""),
   AUTOMATION_MAX_INVOICE_CKB: z.coerce.number().positive().default(1000),
   AUTOMATION_MAX_BATCH_CKB: z.coerce.number().positive().default(5000),
@@ -117,6 +120,25 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['CRON_SECRET'],
         message: 'CRON_SECRET is required in production for worker and operator endpoints.'
+      });
+    }
+
+    const nwcKey = /^[a-f0-9]{64}$/i.test(env.NWC_SECRET_ENCRYPTION_KEY.trim())
+      ? Buffer.from(env.NWC_SECRET_ENCRYPTION_KEY.trim(), 'hex')
+      : Buffer.from(env.NWC_SECRET_ENCRYPTION_KEY.trim(), 'base64');
+    if (nwcKey.length !== 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NWC_SECRET_ENCRYPTION_KEY'],
+        message: 'NWC_SECRET_ENCRYPTION_KEY must contain 32 random bytes encoded as hex or base64 in production.'
+      });
+    }
+
+    if (env.NWC_ALLOW_INSECURE_LOCAL_RELAY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['NWC_ALLOW_INSECURE_LOCAL_RELAY'],
+        message: 'Insecure local NWC relays cannot be enabled in production.'
       });
     }
   }

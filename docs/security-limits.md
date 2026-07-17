@@ -14,7 +14,12 @@ FiberPass uses server-side limits at the API and money-movement layers. Frontend
 
 ## Secret Rules
 
-- Keep `FIBER_API_KEY`, `CRON_SECRET`, `FIBERPASS_OPERATOR_PRIVATE_KEY`, SMTP passwords, and MongoDB credentials server-side only.
+- Keep `FIBER_API_KEY`, `CRON_SECRET`, `FIBERPASS_OPERATOR_PRIVATE_KEY`,
+  `NWC_SECRET_ENCRYPTION_KEY`, NWC connection URIs, SMTP passwords, and MongoDB
+  credentials server-side only.
+- NWC URIs are accepted only in authenticated JSON request bodies. Never put
+  them in URLs, logs, email, analytics, or support tickets. API responses never
+  return connection secrets or relay URLs.
 - Never expose Fiber RPC credentials, vault signer keys, or cron/operator secrets to frontend env.
 - Bearer session tokens are accepted only through the `Authorization` header. Event streams use a separate short-lived ticket from `POST /events/ticket`.
 - Rotate secrets after demos, public recordings, screenshots, or accidental sharing.
