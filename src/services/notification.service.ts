@@ -1,9 +1,9 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
-import WebSocket from 'ws';
+import { isIP, type LookupFunction } from 'node:net';
+import WebSocket, { type RawData } from 'ws';
 import { wrapEvent as wrapNip17Event } from 'nostr-tools/nip17';
-import { SimplePool, useWebSocketImplementation } from 'nostr-tools/pool';
+import type { Event } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { env } from '../config/env.js';
 import type { ContactChannelType } from '../domain/identity.js';
@@ -24,8 +24,6 @@ import { sendEmail } from './email.service.js';
 import { hashContactValue, newIdentityId } from './recipientIdentity.service.js';
 import { paymentReceiptDto } from './receipt.service.js';
 import { isForbiddenWebhookAddress } from './webhookSecurity.service.js';
-
-useWebSocketImplementation(WebSocket);
 
 const DELIVERY_LEASE_MS = 60_000;
 
@@ -84,7 +82,12 @@ function validateReceiptUnsubscribeToken(token: string): string {
   return endpointId;
 }
 
-async function assertSafeRelayUrl(value: string): Promise<string> {
+interface SafeRelay {
+  url: string;
+  addresses: Array<{ address: string; family: 4 | 6 }>;
+}
+
+async function resolveSafeRelay(value: string): Promise<SafeRelay> {
   let url: URL;
   try {
     url = new URL(value);
@@ -100,15 +103,26 @@ async function assertSafeRelayUrl(value: string): Promise<string> {
   if (url.username || url.password || url.hash) {
     throw new ApiError(400, 'NOSTR_RELAY_INVALID', 'Nostr relay URL cannot contain credentials or a fragment.');
   }
-  const addresses = isIP(url.hostname)
-    ? [url.hostname]
-    : (await lookup(url.hostname, { all: true, verbatim: true }).catch(() => {
+  const addressFamily = isIP(url.hostname);
+  const addresses = addressFamily
+    ? [{ address: url.hostname, family: addressFamily }]
+    : await lookup(url.hostname, { all: true, verbatim: true }).catch(() => {
         throw new ApiError(503, 'NOSTR_RELAY_DNS_FAILED', 'Nostr relay hostname could not be resolved safely.');
-      })).map((entry) => entry.address);
-  if (!insecureLocal && addresses.some(isForbiddenWebhookAddress)) {
-    throw new ApiError(400, 'NOSTR_RELAY_FORBIDDEN', 'Nostr relay resolves to a private or reserved address.');
+      });
+  if (addresses.length === 0) throw new ApiError(400, 'NOSTR_RELAY_UNREACHABLE', 'Nostr relay hostname did not resolve.');
+  if (!insecureLocal) {
+    if (addresses.some((entry) => isForbiddenWebhookAddress(entry.address))) {
+      throw new ApiError(400, 'NOSTR_RELAY_FORBIDDEN', 'Nostr relay resolves to a private or reserved address.');
+    }
   }
-  return url.toString();
+  return {
+    url: url.toString(),
+    addresses: addresses.map((entry) => ({ address: entry.address, family: entry.family as 4 | 6 }))
+  };
+}
+
+async function assertSafeRelayUrl(value: string): Promise<string> {
+  return (await resolveSafeRelay(value)).url;
 }
 
 function normalizeEndpointValue(type: ContactChannelType, value: string): string {
@@ -274,31 +288,89 @@ export function renderReceiptNostrMessage(receipt: PaymentReceiptRecord): string
   return ['FiberPass payment receipt', ...receiptSummary(receipt)].join('\n');
 }
 
-async function publishNip17(input: { publicKey: string; relayUrls: string[]; message: string }): Promise<{ reference: string }> {
-  const configuredKey = env.NOSTR_NOTIFICATION_SECRET_KEY.trim().toLowerCase();
+export function createNip17ReceiptEvent(input: {
+  senderSecretKey: string;
+  publicKey: string;
+  relayUrl: string;
+  message: string;
+}) {
+  const configuredKey = input.senderSecretKey.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(configuredKey)) {
     throw new Error('Nostr notification sender key is not configured.');
   }
-  const relays = await Promise.all(input.relayUrls.map(assertSafeRelayUrl));
-  const event = wrapNip17Event(
+  return wrapNip17Event(
     hexToBytes(configuredKey),
-    { publicKey: input.publicKey, relayUrl: relays[0] },
+    { publicKey: input.publicKey, relayUrl: input.relayUrl },
     input.message,
     'FiberPass receipt'
   );
-  const pool = new SimplePool({ enablePing: true, enableReconnect: false });
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    await Promise.race([
-      Promise.any(pool.publish(relays, event)),
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error('Nostr receipt delivery timed out.')), env.NOTIFICATION_DELIVERY_TIMEOUT_MS);
-      })
-    ]);
-  } finally {
-    pool.destroy();
-    if (timeout) clearTimeout(timeout);
-  }
+}
+
+function rawDataText(data: RawData): string {
+  if (typeof data === 'string') return data;
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  return Buffer.from(data).toString('utf8');
+}
+
+async function publishNip17Event(relay: SafeRelay, event: Event): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
+      const requestedFamily = typeof options.family === 'number' ? options.family : 0;
+      const target = relay.addresses.find((entry) => !requestedFamily || entry.family === requestedFamily)
+        ?? relay.addresses[0];
+      callback(null, target.address, target.family);
+    };
+    const socket = new WebSocket(relay.url, {
+      maxPayload: 64 * 1024,
+      handshakeTimeout: env.NOTIFICATION_DELIVERY_TIMEOUT_MS,
+      lookup: pinnedLookup
+    });
+    let finished = false;
+    const finish = (error?: Error): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (socket.readyState === WebSocket.OPEN) socket.close();
+      else socket.terminate();
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(
+      () => finish(new Error('Nostr receipt delivery timed out.')),
+      env.NOTIFICATION_DELIVERY_TIMEOUT_MS
+    );
+    socket.once('open', () => {
+      socket.send(JSON.stringify(['EVENT', event]));
+    });
+    socket.on('message', (data) => {
+      let message: unknown;
+      try {
+        message = JSON.parse(rawDataText(data));
+      } catch {
+        return;
+      }
+      if (!Array.isArray(message) || message[0] !== 'OK' || message[1] !== event.id) return;
+      if (message[2] === true) finish();
+      else finish(new Error('Nostr relay rejected the receipt event.'));
+    });
+    socket.once('error', () => finish(new Error('Nostr relay connection failed.')));
+    socket.once('close', () => {
+      if (!finished) finish(new Error('Nostr relay closed before acknowledging the receipt event.'));
+    });
+  });
+}
+
+async function publishNip17(input: { publicKey: string; relayUrls: string[]; message: string }): Promise<{ reference: string }> {
+  const relays = await Promise.all(input.relayUrls.map(resolveSafeRelay));
+  const event = createNip17ReceiptEvent({
+    senderSecretKey: env.NOSTR_NOTIFICATION_SECRET_KEY,
+    publicKey: input.publicKey,
+    relayUrl: relays[0].url,
+    message: input.message
+  });
+
+  await Promise.any(relays.map((relay) => publishNip17Event(relay, event)));
   return { reference: event.id };
 }
 

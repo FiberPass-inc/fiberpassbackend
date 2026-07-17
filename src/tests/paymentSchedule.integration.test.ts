@@ -10,6 +10,7 @@ import { AuthSessionModel } from '../models/auth.model.js';
 import { PaymentDestinationModel, RecipientIdentityModel } from '../models/identity.model.js';
 import { NwcConnectionModel, NwcPaymentModel } from '../models/nwc.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
+import { PaymentReceiptModel } from '../models/receipt.model.js';
 import { PaymentScheduleModel, ScheduledOccurrenceModel } from '../models/schedule.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { MockNwcRelayWallet } from './nwcTestWallet.js';
@@ -104,6 +105,7 @@ try {
     NwcPaymentModel.syncIndexes(),
     PaymentScheduleModel.syncIndexes(),
     ScheduledOccurrenceModel.syncIndexes(),
+    PaymentReceiptModel.syncIndexes(),
     RateLimitBucketModel.syncIndexes(),
     SessionModel.syncIndexes()
   ]);

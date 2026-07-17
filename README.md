@@ -50,6 +50,9 @@ reconciliation, and revocation behavior are documented in
 Recipient identity, single-use destination claims, reusable destination rules,
 and privacy deletion are documented in
 [docs/recipient-identity-and-privacy.md](docs/recipient-identity-and-privacy.md).
+Immutable settlement receipts, optional email and NIP-17 delivery, retries,
+unsubscribe, export, and retention are documented in
+[docs/receipts-and-private-notifications.md](docs/receipts-and-private-notifications.md).
 
 ## Stack
 
@@ -162,6 +165,13 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `POST /sessions/:id/settle`
 - `GET /privacy/export`
 - `DELETE /privacy/contact-data`
+- `GET /receipts`
+- `GET /receipts/export`
+- `GET /notification-endpoints`
+- `POST /notification-endpoints`
+- `POST /notification-endpoints/unsubscribe`
+- `POST /notification-endpoints/:endpointId/revoke`
+- `DELETE /notification-endpoints/:endpointId`
 - `GET /apps`
 - `POST /apps`
 - `POST /apps/:appId/api-keys`
@@ -196,5 +206,6 @@ npm run test:bitcoin-core-regtest
 npm run test:schedules
 npm run test:metered
 ```
+npm run test:receipts
 
 The existing Mongoose duplicate-index warning is non-blocking test output; build and test exit codes must remain zero.

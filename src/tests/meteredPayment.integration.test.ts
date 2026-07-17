@@ -14,6 +14,7 @@ import {
   MeteredRateCounterModel,
   UsageEventModel
 } from '../models/meteredPayment.model.js';
+import { PaymentReceiptModel } from '../models/receipt.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { NwcConnectionModel } from '../models/nwc.model.js';
 import {
@@ -221,6 +222,7 @@ try {
     MeteredBatchModel.syncIndexes(),
     MeteredRateCounterModel.syncIndexes(),
     UsageEventModel.syncIndexes(),
+    PaymentReceiptModel.syncIndexes(),
     NwcConnectionModel.syncIndexes(),
     SessionModel.syncIndexes()
   ]);
