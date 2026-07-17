@@ -2,6 +2,10 @@
 
 Node.js + TypeScript API for prepaid, revocable Fiber payment sessions.
 
+FiberPass is licensed under the [Apache License 2.0](LICENSE). See
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a change and
+[SECURITY.md](SECURITY.md) before reporting a vulnerability.
+
 ## System Design
 
 See [docs/system-design.md](docs/system-design.md) for the full FiberPass architecture, user flow, developer flow, vault-to-Fiber liquidity design, and payment execution diagram.
@@ -13,6 +17,11 @@ See [docs/worker-reliability.md](docs/worker-reliability.md) for the required AP
 See [docs/webhook-security.md](docs/webhook-security.md) for webhook destination restrictions, encrypted secret storage, retry behavior, and the HMAC verification contract.
 
 See [docs/production-operations.md](docs/production-operations.md) for migrations, release order, incidents, rollback, backup/restore, and key rotation.
+
+Architecture decisions are indexed in [docs/adr/README.md](docs/adr/README.md).
+The separation between Bitcoin/Lightning, CKB/Fiber, and stablecoin grant work
+is documented in
+[docs/grant-work-packages.md](docs/grant-work-packages.md).
 
 ## Stack
 
@@ -42,9 +51,9 @@ npm run worker:payments
 npm run worker:webhooks
 ```
 
-## Fiber Provider
+## Current Fiber Provider
 
-`FIBER_PROVIDER=rpc` is the only supported provider. Configure `FIBER_RPC_URL`, optional `FIBER_API_KEY`, `FIBER_PEER_ID` for the local node identity, and `FIBER_TARGET_PEER_IDS` for external channel peers. Configure `FIBERPASS_VAULT_CODE_HASH`, `FIBERPASS_VAULT_HASH_TYPE`, `FIBERPASS_VAULT_CELL_DEP_TX_HASH`, `FIBERPASS_VAULT_CELL_DEP_INDEX`, and `FIBERPASS_OPERATOR_LOCK_HASH` after deploying the vault lock script so funding requests derive per-user vault addresses and direct vault payouts can spend those cells. Keep `FIBERPASS_OPERATOR_PRIVATE_KEY` only in local/prod secrets; it authorizes vault payout transactions. `FIBERPASS_TREASURY_ADDRESS` remains a temporary fallback while vault deployment is not configured.
+`FIBER_PROVIDER=rpc` is the only implemented provider today. Configure `FIBER_RPC_URL`, optional `FIBER_API_KEY`, `FIBER_PEER_ID` for the local node identity, and `FIBER_TARGET_PEER_IDS` for external channel peers. Configure `FIBERPASS_VAULT_CODE_HASH`, `FIBERPASS_VAULT_HASH_TYPE`, `FIBERPASS_VAULT_CELL_DEP_TX_HASH`, `FIBERPASS_VAULT_CELL_DEP_INDEX`, and `FIBERPASS_OPERATOR_LOCK_HASH` only for the unaudited CKB testnet contract draft. It derives owner-bound contract addresses; those addresses are not wallets issued by FiberPass. Keep `FIBERPASS_OPERATOR_PRIVATE_KEY` only in deployment secrets; it authorizes operator payout transactions and therefore creates a custody risk that must not be presented as user wallet authorization. `FIBERPASS_TREASURY_ADDRESS` is a temporary testnet fallback while the contract deployment is not configured.
 
 See `docs/fiber-network-spike.md` for integration notes. For a production-capable Docker node and authenticated RPC gateway, see `docs/fiber-node-deployment.md`.
 
