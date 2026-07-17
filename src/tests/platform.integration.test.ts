@@ -7,6 +7,7 @@ import { AppModel } from '../models/app.model.js';
 import { AuthChallengeModel, AuthSessionModel } from '../models/auth.model.js';
 import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from '../models/automation.model.js';
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
+import { PaymentDestinationModel, RecipientIdentityModel } from '../models/identity.model.js';
 import { RateLimitBucketModel } from '../models/rateLimitBucket.model.js';
 import { SessionModel } from '../models/session.model.js';
 import { StreamTicketModel } from '../models/streamTicket.model.js';
@@ -41,6 +42,8 @@ try {
     InvoiceModel.syncIndexes(),
     PaymentJobModel.syncIndexes(),
     PaymentBatchModel.syncIndexes(),
+    PaymentDestinationModel.syncIndexes(),
+    RecipientIdentityModel.syncIndexes(),
     RateLimitBucketModel.syncIndexes(),
     SessionModel.syncIndexes(),
     StreamTicketModel.syncIndexes()
@@ -216,6 +219,12 @@ try {
     serviceAddress: walletAddress,
     externalId: 'recipient-external-id'
   });
+  const recipientIdentity = await RecipientIdentityModel.findOne({ recipientId: recipient.id }).lean();
+  assert.equal(recipientIdentity?.automationRecipientId, recipient.id);
+  const activeDestination = await PaymentDestinationModel.findOne({ recipientId: recipient.id, status: 'active' }).lean();
+  assert.equal(activeDestination?.kind, 'address');
+  assert.equal(activeDestination?.reusable, true);
+  assert.equal(activeDestination?.verificationScope, 'delivery_instruction');
   const invoices = await Promise.allSettled(Array.from({ length: 20 }, () => createInvoice(actor, {
     sessionId,
     recipientId: recipient.id,

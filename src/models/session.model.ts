@@ -36,6 +36,12 @@ const transactionLogSchema = new Schema(
 
 const recipientWalletSchema = new Schema(
   {
+    recipientId: { type: String, trim: true, index: true },
+    destinationId: { type: String, trim: true, index: true },
+    destinationReusable: { type: Boolean },
+    claimId: { type: String, trim: true, index: true },
+    claimChannelId: { type: String, trim: true },
+    notificationEndpointId: { type: String, trim: true },
     name: { type: String, required: true, trim: true },
     address: { type: String, trim: true, default: '' },
     email: { type: String, trim: true, lowercase: true },
@@ -45,7 +51,7 @@ const recipientWalletSchema = new Schema(
     amountAtomic: atomicAmountField(),
     fiberInvoice: { type: String, trim: true },
     status: { type: String, enum: ['awaiting_details', 'pending', 'processing', 'paid', 'failed'], default: 'pending' },
-    inviteStatus: { type: String, enum: ['not_required', 'pending', 'sent', 'claimed', 'expired', 'send_failed'], default: 'not_required' },
+    inviteStatus: { type: String, enum: ['not_required', 'pending', 'sent', 'claimed', 'expired', 'revoked', 'send_failed'], default: 'not_required' },
     inviteTokenHash: { type: String, trim: true, index: true },
     inviteTokenExpiresAt: { type: Date },
     inviteSentAt: { type: Date },

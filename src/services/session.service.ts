@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { paymentConnectorRegistry } from '../connectors/index.js';
 import { env } from '../config/env.js';
 import { assetIdForLegacyCurrency, moneyValue, PAYMENT_CONTRACT_VERSION, type PaymentIntent, type PaymentResult } from '../domain/payment.js';
+import { paymentPurposeRepeats } from '../domain/identity.js';
 import { ckbTransactionExplorerUrl } from '../lib/ckbExplorer.js';
 import { listLiveVaultCells } from './ckbChain.service.js';
 import { ApiError } from '../lib/errors.js';
@@ -13,6 +14,12 @@ import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAt
 import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionLifecycleProviderStatus, type SessionLifecycleState, type SessionRecord, type SessionStatus } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
+import {
+  ClaimChannelModel,
+  PaymentDestinationModel,
+  RecipientClaimModel,
+  RecipientIdentityModel
+} from '../models/identity.model.js';
 import { writeAuditLog } from './audit.service.js';
 import {
   ChargeReservationError,
@@ -31,6 +38,14 @@ import { createFiberExitInvoice, executeFiberExitCkbSettlement } from './fiberEx
 import { ensureVaultFundedFiberLiquidity, getCurrentFiberPayoutLiquiditySnapshot } from './fiberLiquidityBridge.service.js';
 import { fiberProvider } from './fiberProvider.js';
 import { sendRecipientInviteEmail, sendRecipientPayoutReceiptEmail } from './recipientEmail.service.js';
+import {
+  destinationProjection,
+  hashContactValue,
+  hashPrivateValue,
+  newIdentityId,
+  persistSessionRecipientIdentities,
+  withRecipientIdentityIds
+} from './recipientIdentity.service.js';
 import { deriveVaultForWallet } from './vault.service.js';
 
 const LEGACY_PLACEHOLDER_BALANCE_MINOR = toMinorUnits('1240.50', 'USDC');
@@ -110,6 +125,12 @@ interface TransactionLogDto {
 }
 
 export interface RecipientWalletDto {
+  recipientId?: string;
+  destinationId?: string;
+  destinationReusable?: boolean;
+  claimId?: string;
+  claimChannelId?: string;
+  notificationEndpointId?: string;
   name: string;
   address?: string;
   email?: string;
@@ -124,7 +145,7 @@ export interface RecipientWalletDto {
   lastAttemptAt?: string | Date;
   lastFailureCode?: string;
   lastFailureMessage?: string;
-  inviteStatus?: 'not_required' | 'pending' | 'sent' | 'claimed' | 'expired' | 'send_failed';
+  inviteStatus?: 'not_required' | 'pending' | 'sent' | 'claimed' | 'expired' | 'revoked' | 'send_failed';
   inviteTokenHash?: string;
   inviteTokenExpiresAt?: string | Date;
   inviteSentAt?: string | Date;
@@ -758,9 +779,11 @@ function prepareRecipientInvites(wallets: RecipientWalletDto[]): { wallets: Reci
     if (!wallet.email || wallet.address || wallet.fiberInvoice) return wallet;
     const token = newMagicToken();
     const expiresAt = inviteExpiryDate();
+    const claimId = newIdentityId('clm');
     invites.push({ index, token, email: wallet.email, expiresAt });
     return {
       ...wallet,
+      claimId,
       status: 'awaiting_details' as const,
       inviteStatus: 'pending' as const,
       inviteTokenHash: sha256(token),
@@ -821,7 +844,7 @@ async function sendSessionRecipientInvites(session: SessionRecord & { createdAt?
 
 export interface RecipientClaimDto {
   tokenValid: boolean;
-  status: 'pending' | 'claimed' | 'expired' | 'not_found';
+  status: 'pending' | 'claimed' | 'expired' | 'revoked' | 'not_found';
   recipientName?: string;
   recipientEmail?: string;
   amount?: number;
@@ -927,13 +950,16 @@ function normalizeTimeZone(value?: string): string | undefined {
   }
 }
 
-function recipientClaimDto(input: { session: SessionRecord; wallet: RecipientWalletDto; expired: boolean }): RecipientClaimDto {
-  const { session, wallet, expired } = input;
-  const claimed = Boolean((wallet.address || wallet.fiberInvoice) && wallet.inviteClaimedAt);
+function recipientClaimDto(input: {
+  session: SessionRecord;
+  wallet: RecipientWalletDto;
+  status: 'pending' | 'claimed' | 'expired' | 'revoked';
+}): RecipientClaimDto {
+  const { session, wallet, status } = input;
   const amountMinor = fallbackMinorUnits(wallet.amountMinor, wallet.amount, session.currency);
   return {
-    tokenValid: !expired,
-    status: expired ? 'expired' : claimed ? 'claimed' : 'pending',
+    tokenValid: status === 'pending',
+    status,
     recipientName: wallet.name,
     recipientEmail: wallet.email,
     amount: fromMinorUnits(amountMinor, session.currency),
@@ -951,27 +977,136 @@ function recipientClaimDto(input: { session: SessionRecord; wallet: RecipientWal
   };
 }
 
-async function findRecipientClaim(token: string): Promise<{ session: SessionRecord & { save: () => Promise<unknown>; set: (path: string, value: unknown) => void }; wallet: RecipientWalletDto; index: number; expired: boolean } | null> {
-  const tokenHash = sha256(token);
-  const session = await SessionModel.findOne({ 'recipientWallets.inviteTokenHash': tokenHash });
-  if (!session) return null;
+interface ResolvedRecipientClaim {
+  authority: {
+    claimId: string;
+    recipientId: string;
+    ownerWalletId: string;
+    sessionId: string;
+    sessionRecipientIndex: number;
+    channelId?: string | null;
+    tokenHash: string;
+    status: 'pending' | 'claimed' | 'expired' | 'revoked';
+    expiresAt: Date;
+  };
+  session: SessionRecord;
+  wallet: RecipientWalletDto;
+  index: number;
+}
+
+async function migrateLegacyClaimAuthority(tokenHash: string): Promise<void> {
+  const session = await SessionModel.findOne({ 'recipientWallets.inviteTokenHash': tokenHash }).lean<SessionRecord | null>();
+  if (!session) return;
   const wallets = (session.recipientWallets ?? []) as RecipientWalletDto[];
   const index = wallets.findIndex((wallet) => wallet.inviteTokenHash === tokenHash);
-  if (index < 0) return null;
+  if (index < 0) return;
   const wallet = wallets[index];
-  const expiresAt = wallet.inviteTokenExpiresAt instanceof Date ? wallet.inviteTokenExpiresAt : wallet.inviteTokenExpiresAt ? new Date(wallet.inviteTokenExpiresAt) : undefined;
-  const expired = Boolean(expiresAt && expiresAt.getTime() <= Date.now());
-  if (expired && wallet.inviteStatus !== 'expired' && !wallet.inviteClaimedAt) {
-    session.set('recipientWallets.' + index + '.inviteStatus', 'expired');
-    await session.save();
+  const recipientId = wallet.recipientId ?? 'legacy_session_' + session.publicId + '_' + index;
+  const claimId = wallet.claimId ?? 'legacy_claim_' + session.publicId + '_' + index;
+  const channelId = wallet.email ? (wallet.claimChannelId ?? 'legacy_channel_' + session.publicId + '_' + index) : undefined;
+  const expiresAt = wallet.inviteTokenExpiresAt ? new Date(wallet.inviteTokenExpiresAt) : new Date(0);
+  const status = wallet.inviteClaimedAt
+    ? 'claimed'
+    : wallet.inviteStatus === 'revoked'
+      ? 'revoked'
+      : expiresAt.getTime() <= Date.now()
+        ? 'expired'
+        : 'pending';
+  await RecipientIdentityModel.updateOne(
+    { recipientId },
+    { $setOnInsert: { recipientId, ownerWalletId: session.ownerWalletId, name: wallet.name, sessionId: session.publicId, sessionRecipientIndex: index } },
+    { upsert: true }
+  );
+  if (wallet.email && channelId) {
+    await ClaimChannelModel.updateOne(
+      { channelId },
+      { $setOnInsert: { channelId, recipientId, ownerWalletId: session.ownerWalletId, type: 'email', value: wallet.email, valueHash: hashContactValue(wallet.email), status: 'active' } },
+      { upsert: true }
+    );
   }
-  return { session: session as unknown as SessionRecord & { save: () => Promise<unknown>; set: (path: string, value: unknown) => void }, wallet, index, expired };
+  await RecipientClaimModel.updateOne(
+    { tokenHash },
+    {
+      $setOnInsert: {
+        claimId,
+        recipientId,
+        ownerWalletId: session.ownerWalletId,
+        sessionId: session.publicId,
+        sessionRecipientIndex: index,
+        channelId,
+        tokenHash,
+        purpose: 'bind_destination',
+        status,
+        expiresAt,
+        claimedAt: wallet.inviteClaimedAt ? new Date(wallet.inviteClaimedAt) : undefined
+      }
+    },
+    { upsert: true }
+  );
+  await SessionModel.updateOne(
+    { publicId: session.publicId },
+    {
+      $set: {
+        ['recipientWallets.' + index + '.recipientId']: recipientId,
+        ['recipientWallets.' + index + '.claimId']: claimId,
+        ...(channelId ? { ['recipientWallets.' + index + '.claimChannelId']: channelId } : {})
+      }
+    }
+  );
+}
+
+async function findRecipientClaim(token: string): Promise<ResolvedRecipientClaim | null> {
+  const tokenHash = sha256(token);
+  let authority = await RecipientClaimModel.findOne({ tokenHash }).lean();
+  if (!authority) {
+    await migrateLegacyClaimAuthority(tokenHash);
+    authority = await RecipientClaimModel.findOne({ tokenHash }).lean();
+  }
+  if (!authority) return null;
+  if (authority.status === 'pending' && authority.expiresAt.getTime() <= Date.now()) {
+    await RecipientClaimModel.updateOne(
+      { claimId: authority.claimId, status: 'pending' },
+      { $set: { status: 'expired' } }
+    );
+    authority.status = 'expired';
+    await SessionModel.updateOne(
+      { publicId: authority.sessionId },
+      { $set: { ['recipientWallets.' + authority.sessionRecipientIndex + '.inviteStatus']: 'expired' } }
+    );
+  }
+  const session = await SessionModel.findOne({ publicId: authority.sessionId }).lean<SessionRecord | null>();
+  if (!session) return null;
+  const wallets = (session.recipientWallets ?? []) as RecipientWalletDto[];
+  const wallet = wallets[authority.sessionRecipientIndex];
+  if (!wallet) return null;
+  return {
+    authority: {
+      claimId: authority.claimId,
+      recipientId: authority.recipientId,
+      ownerWalletId: authority.ownerWalletId,
+      sessionId: authority.sessionId,
+      sessionRecipientIndex: authority.sessionRecipientIndex,
+      channelId: authority.channelId,
+      tokenHash: authority.tokenHash,
+      status: authority.status,
+      expiresAt: authority.expiresAt
+    },
+    session,
+    wallet,
+    index: authority.sessionRecipientIndex
+  };
 }
 
 export async function getRecipientClaim(token: string): Promise<RecipientClaimDto> {
   const claim = await findRecipientClaim(token);
   if (!claim) return { tokenValid: false, status: 'not_found' };
-  return recipientClaimDto(claim);
+  return recipientClaimDto({ session: claim.session, wallet: claim.wallet, status: claim.authority.status });
+}
+
+function claimStateError(status: string): ApiError {
+  if (status === 'claimed') return new ApiError(409, 'RECIPIENT_CLAIM_ALREADY_USED', 'This FiberPass payment link has already been used.');
+  if (status === 'revoked') return new ApiError(410, 'RECIPIENT_CLAIM_REVOKED', 'This FiberPass payment link has been revoked.');
+  return new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
 }
 
 export async function claimRecipientWallet(token: string, input: { address?: string; fiberInvoice?: string }, timeZone?: string): Promise<RecipientClaimDto> {
@@ -982,7 +1117,10 @@ export async function claimRecipientWallet(token: string, input: { address?: str
   }
   const claim = await findRecipientClaim(token);
   if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
-  if (claim.expired) throw new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
+  if (claim.authority.status !== 'pending') throw claimStateError(claim.authority.status);
+  if (paymentPurposeRepeats(claim.session.paymentPurpose) && fiberInvoice) {
+    throw new ApiError(400, 'RECIPIENT_REUSABLE_DESTINATION_REQUIRED', 'Repeated schedules require a reusable wallet address or endpoint, not a one-time invoice.');
+  }
 
   const amountMinor = fallbackMinorUnits(claim.wallet.amountMinor, claim.wallet.amount, claim.session.currency);
   await validateRecipientDestination({
@@ -992,14 +1130,75 @@ export async function claimRecipientWallet(token: string, input: { address?: str
     fiberInvoice
   });
 
-  if (address) claim.session.set('recipientWallets.' + claim.index + '.address', address);
-  if (fiberInvoice) claim.session.set('recipientWallets.' + claim.index + '.fiberInvoice', fiberInvoice);
-  claim.session.set('recipientWallets.' + claim.index + '.status', 'pending');
-  claim.session.set('recipientWallets.' + claim.index + '.inviteStatus', 'claimed');
   const recipientTimeZone = normalizeTimeZone(timeZone);
-  if (recipientTimeZone) claim.session.set('recipientWallets.' + claim.index + '.recipientTimeZone', recipientTimeZone);
-  claim.session.set('recipientWallets.' + claim.index + '.inviteClaimedAt', new Date());
-  await claim.session.save();
+  const now = new Date();
+  const destinationId = newIdentityId('dst');
+  const projection = destinationProjection({ address, fiberInvoice });
+  if (!projection) throw new ApiError(400, 'RECIPIENT_DESTINATION_REQUIRED', 'Add a supported payment destination.');
+  await SessionModel.db.transaction(async (mongoSession) => {
+    const consumed = await RecipientClaimModel.findOneAndUpdate(
+      {
+        claimId: claim.authority.claimId,
+        status: 'pending',
+        expiresAt: { $gt: now }
+      },
+      {
+        $set: {
+          status: 'claimed',
+          claimedAt: now,
+          contactVerifiedAt: now,
+          destinationId
+        }
+      },
+      { new: true, session: mongoSession }
+    );
+    if (!consumed) {
+      const current = await RecipientClaimModel.findOne({ claimId: claim.authority.claimId }).session(mongoSession).lean();
+      throw claimStateError(current?.status ?? 'expired');
+    }
+    await PaymentDestinationModel.updateMany(
+      { recipientId: claim.authority.recipientId, status: 'active' },
+      { $set: { status: 'replaced', replacedAt: now, replacedByDestinationId: destinationId } },
+      { session: mongoSession }
+    );
+    await PaymentDestinationModel.create([{
+      destinationId,
+      recipientId: claim.authority.recipientId,
+      ownerWalletId: claim.authority.ownerWalletId,
+      ...projection,
+      network: env.FIBER_NETWORK,
+      valueHash: hashPrivateValue(projection.value),
+      status: 'active',
+      verificationMethod: 'claim_link',
+      verificationScope: 'delivery_instruction',
+      verifiedAt: now
+    }], { session: mongoSession });
+    if (claim.authority.channelId) {
+      await ClaimChannelModel.updateOne(
+        { channelId: claim.authority.channelId, status: 'active' },
+        { $set: { deliveryVerifiedAt: now } },
+        { session: mongoSession }
+      );
+    }
+    const set: Record<string, unknown> = {
+      ['recipientWallets.' + claim.index + '.destinationId']: destinationId,
+      ['recipientWallets.' + claim.index + '.destinationReusable']: projection.reusable,
+      ['recipientWallets.' + claim.index + '.status']: 'pending',
+      ['recipientWallets.' + claim.index + '.inviteStatus']: 'claimed',
+      ['recipientWallets.' + claim.index + '.inviteClaimedAt']: now
+    };
+    if (address) set['recipientWallets.' + claim.index + '.address'] = address;
+    if (fiberInvoice) set['recipientWallets.' + claim.index + '.fiberInvoice'] = fiberInvoice;
+    if (recipientTimeZone) set['recipientWallets.' + claim.index + '.recipientTimeZone'] = recipientTimeZone;
+    const unset: Record<string, 1> = {};
+    if (address) unset['recipientWallets.' + claim.index + '.fiberInvoice'] = 1;
+    if (fiberInvoice) unset['recipientWallets.' + claim.index + '.address'] = 1;
+    await SessionModel.updateOne(
+      { publicId: claim.authority.sessionId, ownerWalletId: claim.authority.ownerWalletId },
+      { $set: set, ...(Object.keys(unset).length > 0 ? { $unset: unset } : {}) },
+      { session: mongoSession }
+    );
+  });
   void runScheduledLiquidityPreparation({
     ownerWalletId: claim.session.ownerWalletId as string,
     sessionId: claim.session.publicId,
@@ -1009,7 +1208,7 @@ export async function claimRecipientWallet(token: string, input: { address?: str
 
   const refreshed = await findRecipientClaim(token);
   if (!refreshed) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
-  return recipientClaimDto(refreshed);
+  return recipientClaimDto({ session: refreshed.session, wallet: refreshed.wallet, status: refreshed.authority.status });
 }
 
 export async function validateRecipientClaimDestination(
@@ -1018,7 +1217,10 @@ export async function validateRecipientClaimDestination(
 ): Promise<RecipientDestinationPolicyDto> {
   const claim = await findRecipientClaim(token);
   if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'This FiberPass payment link was not found.');
-  if (claim.expired) throw new ApiError(410, 'RECIPIENT_CLAIM_EXPIRED', 'This FiberPass payment link has expired.');
+  if (claim.authority.status !== 'pending') throw claimStateError(claim.authority.status);
+  if (paymentPurposeRepeats(claim.session.paymentPurpose) && input.fiberInvoice) {
+    throw new ApiError(400, 'RECIPIENT_REUSABLE_DESTINATION_REQUIRED', 'Repeated schedules require a reusable wallet address or endpoint, not a one-time invoice.');
+  }
   const amountMinor = fallbackMinorUnits(claim.wallet.amountMinor, claim.wallet.amount, claim.session.currency);
   return validateRecipientDestination({
     amount: fromMinorUnits(amountMinor, claim.session.currency),
@@ -1584,7 +1786,10 @@ export async function createSession(input: CreateSessionInput, walletId: string)
     recipientName: input.recipientName,
     recipientAddress: input.recipientAddress,
     recipientWallets: input.recipientWallets
-  });
+  }).map((wallet) => withRecipientIdentityIds(wallet));
+  if (paymentPurposeRepeats(paymentPurpose) && normalizedRecipientWallets.some((wallet) => wallet.fiberInvoice)) {
+    throw new ApiError(400, 'RECIPIENT_REUSABLE_DESTINATION_REQUIRED', 'Repeated schedules require a reusable wallet address or endpoint, not a one-time invoice.');
+  }
   await Promise.all(normalizedRecipientWallets
     .filter((wallet) => (wallet.address || wallet.fiberInvoice) && wallet.amountMinor != null)
     .map((wallet) => validateRecipientDestination({
@@ -1693,6 +1898,13 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       singleUse: effectiveSingleUse,
       logs: [newLog(paymentPurpose === 'app_session' ? 'Session Stream Limit Created' : 'Payment Rule Reserve Created')]
     }], { session: mongoSession });
+    await persistSessionRecipientIdentities({
+      ownerWalletId: walletId,
+      ownerAddress: wallet.address,
+      sessionId: publicId,
+      wallets: recipientWallets as Array<RecipientWalletDto & { recipientId: string }>,
+      session: mongoSession
+    });
     createdSession = created.toObject() as SessionRecord;
   });
 
@@ -1765,24 +1977,102 @@ export async function resendRecipientInvites(publicId: string, walletId: string)
   requireEmailConfigured();
 
   const invites: PreparedRecipientInvite[] = [];
+  const replacementClaims: Array<{
+    index: number;
+    claimId: string;
+    recipientId: string;
+    channelId?: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }> = [];
   for (const { wallet, index } of candidateIndexes) {
     const token = newMagicToken();
     const expiresAt = inviteExpiryDate();
+    const claimId = newIdentityId('clm');
+    const recipientId = wallet.recipientId ?? 'legacy_session_' + publicId + '_' + index;
     invites.push({ index, token, email: wallet.email as string, expiresAt });
-    session.set('recipientWallets.' + index + '.inviteTokenHash', sha256(token));
-    session.set('recipientWallets.' + index + '.inviteTokenExpiresAt', expiresAt);
-    session.set('recipientWallets.' + index + '.inviteStatus', 'pending');
-    session.set('recipientWallets.' + index + '.inviteLastFailure', undefined);
-    session.set('recipientWallets.' + index + '.status', 'awaiting_details');
+    replacementClaims.push({
+      index,
+      claimId,
+      recipientId,
+      channelId: wallet.claimChannelId,
+      tokenHash: sha256(token),
+      expiresAt
+    });
   }
 
-  await session.save();
-  await sendSessionRecipientInvites(session.toObject() as SessionRecord, invites);
+  await SessionModel.db.transaction(async (mongoSession) => {
+    for (const claim of replacementClaims) {
+      await RecipientClaimModel.updateMany(
+        { recipientId: claim.recipientId, status: 'pending' },
+        { $set: { status: 'revoked', revokedAt: new Date() } },
+        { session: mongoSession }
+      );
+      await RecipientClaimModel.create([{
+        claimId: claim.claimId,
+        recipientId: claim.recipientId,
+        ownerWalletId: walletId,
+        sessionId: publicId,
+        sessionRecipientIndex: claim.index,
+        channelId: claim.channelId,
+        tokenHash: claim.tokenHash,
+        purpose: 'bind_destination',
+        status: 'pending',
+        expiresAt: claim.expiresAt
+      }], { session: mongoSession });
+      await SessionModel.updateOne(
+        { publicId, ownerWalletId: walletId },
+        {
+          $set: {
+            ['recipientWallets.' + claim.index + '.recipientId']: claim.recipientId,
+            ['recipientWallets.' + claim.index + '.claimId']: claim.claimId,
+            ['recipientWallets.' + claim.index + '.inviteTokenHash']: claim.tokenHash,
+            ['recipientWallets.' + claim.index + '.inviteTokenExpiresAt']: claim.expiresAt,
+            ['recipientWallets.' + claim.index + '.inviteStatus']: 'pending',
+            ['recipientWallets.' + claim.index + '.status']: 'awaiting_details'
+          },
+          $unset: { ['recipientWallets.' + claim.index + '.inviteLastFailure']: 1 }
+        },
+        { session: mongoSession }
+      );
+    }
+  });
+  const refreshedSession = await SessionModel.findOne({ publicId, ownerWalletId: walletId }).lean<SessionRecord | null>();
+  if (!refreshedSession) throw new ApiError(404, 'SESSION_NOT_FOUND', 'FiberPass session was not found.');
+  await sendSessionRecipientInvites(refreshedSession as SessionRecord & { createdAt?: Date }, invites);
   await writeAuditLog({ actorWalletId: walletId, action: 'session.recipient_invites_resent', targetType: 'session', targetId: publicId, metadata: { recipientInviteCount: invites.length } });
 
   const overview = await getSessionsOverview(walletId);
   liveEvents.publish('overview:' + walletId, overview);
   return overview;
+}
+
+export async function revokeRecipientClaim(publicId: string, claimId: string, walletId: string): Promise<{ claimId: string; status: 'revoked' }> {
+  const claim = await RecipientClaimModel.findOne({ claimId, sessionId: publicId, ownerWalletId: walletId }).lean();
+  if (!claim) throw new ApiError(404, 'RECIPIENT_CLAIM_NOT_FOUND', 'Recipient claim was not found for this pass.');
+  if (claim.status === 'claimed') throw new ApiError(409, 'RECIPIENT_CLAIM_ALREADY_USED', 'A claimed destination link cannot be revoked retroactively.');
+  if (claim.status === 'revoked') return { claimId, status: 'revoked' };
+  const now = new Date();
+  await SessionModel.db.transaction(async (mongoSession) => {
+    await RecipientClaimModel.updateOne(
+      { claimId, sessionId: publicId, ownerWalletId: walletId, status: { $in: ['pending', 'expired'] } },
+      { $set: { status: 'revoked', revokedAt: now } },
+      { session: mongoSession }
+    );
+    await SessionModel.updateOne(
+      { publicId, ownerWalletId: walletId },
+      { $set: { ['recipientWallets.' + claim.sessionRecipientIndex + '.inviteStatus']: 'revoked' } },
+      { session: mongoSession }
+    );
+  });
+  await writeAuditLog({
+    actorWalletId: walletId,
+    action: 'session.recipient_claim.revoked',
+    targetType: 'recipient_claim',
+    targetId: claimId,
+    metadata: { sessionId: publicId, recipientId: claim.recipientId }
+  });
+  return { claimId, status: 'revoked' };
 }
 
 function sessionTransitionPending(session: {
@@ -2809,8 +3099,9 @@ function isStaleProcessingPayout(wallet: RecipientWalletDto, nowMs = Date.now())
   return Number.isFinite(lastAttemptMs) && lastAttemptMs <= nowMs - PAYOUT_PROCESSING_STALE_MS;
 }
 
-function isPayoutRecipientProcessable(wallet: RecipientWalletDto): boolean {
+function isPayoutRecipientProcessable(wallet: RecipientWalletDto, paymentPurpose: string): boolean {
   if (!wallet.fiberInvoice && !wallet.address) return false;
+  if (paymentPurposeRepeats(paymentPurpose) && wallet.fiberInvoice && wallet.destinationReusable !== true) return false;
   return !wallet.status || wallet.status === 'pending' || (wallet.status === 'failed' && isRetryablePayoutFailure(wallet) && isRetryBackoffElapsed(wallet)) || isStaleProcessingPayout(wallet);
 }
 
@@ -3214,8 +3505,9 @@ function hasPendingLiquidityFailure(wallet: RecipientWalletDto): boolean {
   return PENDING_PAYOUT_FAILURE_CODES.includes(wallet.lastFailureCode as typeof PENDING_PAYOUT_FAILURE_CODES[number]);
 }
 
-function isLiquidityRecipientPreparable(wallet: RecipientWalletDto): boolean {
+function isLiquidityRecipientPreparable(wallet: RecipientWalletDto, paymentPurpose: string): boolean {
   if (!wallet.address && !wallet.fiberInvoice) return false;
+  if (paymentPurposeRepeats(paymentPurpose) && wallet.fiberInvoice && wallet.destinationReusable !== true) return false;
   if (wallet.status === 'paid' || wallet.status === 'awaiting_details') return false;
   if (wallet.status === 'processing') return isStaleProcessingPayout(wallet);
   if (wallet.status === 'failed') return isRetryablePayoutFailure(wallet) && isRetryBackoffElapsed(wallet);
@@ -3298,7 +3590,7 @@ export async function runScheduledLiquidityPreparation(input: ScheduledLiquidity
         result.skipped += 1;
         continue;
       }
-      if (!isLiquidityRecipientPreparable(wallet)) {
+      if (!isLiquidityRecipientPreparable(wallet, session.paymentPurpose)) {
         result.skipped += 1;
         continue;
       }
@@ -3455,7 +3747,7 @@ export async function runDueSessionPayouts(input: DueSessionPayoutWorkerInput = 
         result.skipped += 1;
         continue;
       }
-      if (!isPayoutRecipientProcessable(wallet)) continue;
+      if (!isPayoutRecipientProcessable(wallet, session.paymentPurpose)) continue;
       const claimed = await claimRecipientWalletForPayout({ sessionId: session.publicId, index, staleBefore, retryBefore });
       if (!claimed) {
         result.skipped += 1;

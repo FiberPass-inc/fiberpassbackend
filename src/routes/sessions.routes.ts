@@ -17,6 +17,7 @@ import {
   isValidPaymentPurpose,
   isValidReleaseCadence,
   resendRecipientInvites,
+  revokeRecipientClaim,
   runDueSessionPayouts,
   runScheduledLiquidityPreparation,
   revokeSession,
@@ -82,6 +83,10 @@ const appGrantSchema = z.object({
 });
 
 const paramsSchema = z.object({ id: z.string().min(1) });
+const claimControlParamsSchema = z.object({
+  id: z.string().min(1),
+  claimId: z.string().trim().min(8).max(200)
+});
 const claimParamsSchema = z.object({ token: z.string().trim().min(32).max(200) });
 const claimWalletSchema = z.object({
   address: z.string().trim().max(190).optional().or(z.literal('')).refine((value) => !value || isFiberCkbAddress(value), FIBER_CKB_ADDRESS_ERROR),
@@ -173,6 +178,12 @@ sessionsRouter.post('/sessions/:id/recipient-invites/resend', requireAuth, async
   const { walletId } = (request as AuthenticatedRequest).auth;
   const { id } = paramsSchema.parse(request.params);
   response.json(await resendRecipientInvites(id, walletId));
+}));
+
+sessionsRouter.post('/sessions/:id/recipient-claims/:claimId/revoke', requireAuth, asyncHandler(async (request, response) => {
+  const { walletId } = (request as AuthenticatedRequest).auth;
+  const { id, claimId } = claimControlParamsSchema.parse(request.params);
+  response.json(await revokeRecipientClaim(id, claimId, walletId));
 }));
 
 sessionsRouter.post('/sessions/:id/toggle-pause', requireAuth, asyncHandler(async (request, response) => {
