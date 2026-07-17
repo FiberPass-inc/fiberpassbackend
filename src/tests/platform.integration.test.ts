@@ -77,11 +77,23 @@ try {
     network: string;
     assetId: string;
     supportsLookup: boolean;
-    funding: Array<{ mode: string; requiresNetworkProof: boolean }>;
+    funding: Array<{ mode: string; requiresNetworkProof: boolean; supportsExecution: boolean }>;
   }>;
   assert.deepEqual(
     capabilities.map((capability) => capability.rail).sort(),
-    ['ckb_onchain', 'fiber', 'lightning', 'lightning', 'lightning', 'lightning']
+    [
+      'bitcoin_onchain',
+      'ckb_onchain',
+      'fiber',
+      'lightning',
+      'lightning',
+      'lightning',
+      'lightning',
+      'lightning',
+      'lightning',
+      'lightning',
+      'lightning'
+    ]
   );
   assert.deepEqual(
     capabilities
@@ -93,6 +105,24 @@ try {
   assert.ok(capabilities
     .filter((capability) => capability.connectorId === 'nwc-nip47')
     .every((capability) => capability.assetId === 'bitcoin:btc' && capability.supportsLookup));
+  assert.deepEqual(
+    capabilities
+      .filter((capability) => capability.connectorId === 'btcpay-greenfield')
+      .map((capability) => capability.network)
+      .sort(),
+    ['mainnet', 'regtest', 'signet', 'testnet']
+  );
+  assert.ok(capabilities
+    .filter((capability) => capability.connectorId === 'btcpay-greenfield')
+    .every((capability) => capability.assetId === 'bitcoin:btc'
+      && capability.supportsLookup
+      && capability.funding.every((funding) => funding.mode === 'connected_wallet' && funding.supportsExecution)));
+  const bitcoinPsbtCapability = capabilities.find((capability) => capability.connectorId === 'bitcoin-core-psbt');
+  assert.ok(bitcoinPsbtCapability);
+  assert.equal(bitcoinPsbtCapability.rail, 'bitcoin_onchain');
+  assert.equal(bitcoinPsbtCapability.network, 'regtest');
+  assert.equal(bitcoinPsbtCapability.assetId, 'bitcoin:btc');
+  assert.ok(bitcoinPsbtCapability.funding.every((funding) => funding.mode === 'connected_wallet' && !funding.supportsExecution));
   assert.ok(capabilities.every((capability) => Array.isArray(capability.funding)));
   const fiberCapability = capabilities.find((capability) => capability.connectorId === 'fiber-rpc');
   assert.ok(fiberCapability);
