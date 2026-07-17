@@ -3,6 +3,7 @@ import { paymentConnectorRegistry } from '../connectors/index.js';
 import { env } from '../config/env.js';
 import { assetIdForLegacyCurrency, moneyValue, PAYMENT_CONTRACT_VERSION, type PaymentIntent, type PaymentResult } from '../domain/payment.js';
 import { paymentPurposeRepeats } from '../domain/identity.js';
+import type { FundingGuarantee, FundingMode, FundingRiskLabel, FundingSourceState } from '../domain/funding.js';
 import { ckbTransactionExplorerUrl } from '../lib/ckbExplorer.js';
 import { listLiveVaultCells } from './ckbChain.service.js';
 import { ApiError } from '../lib/errors.js';
@@ -14,6 +15,12 @@ import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAt
 import { ICON_TYPES, PAYMENT_PURPOSES, RELEASE_CADENCES, SESSION_APP_PERMISSIONS, SessionModel, type IconType, type PaymentPurpose, type ReleaseCadence, type SessionAppPermission, type SessionLifecycleProviderStatus, type SessionLifecycleState, type SessionRecord, type SessionStatus } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
+import {
+  FundingAllocationModel,
+  FundingSourceModel,
+  type FundingAllocationRecord,
+  type FundingSourceRecord
+} from '../models/fundingSource.model.js';
 import {
   ClaimChannelModel,
   PaymentDestinationModel,
@@ -47,6 +54,17 @@ import {
   withRecipientIdentityIds
 } from './recipientIdentity.service.js';
 import { deriveVaultForWallet } from './vault.service.js';
+import {
+  allocateFundingForSession,
+  fundingExecutionStatus,
+  listFundingSources,
+  releaseFundingAllocation,
+  releaseFundingAllocationTransaction,
+  resolveFundingSelection,
+  recordSecuredFundingBalance,
+  toFundingSourceDto,
+  topUpFundingAllocation
+} from './fundingSource.service.js';
 
 const LEGACY_PLACEHOLDER_BALANCE_MINOR = toMinorUnits('1240.50', 'USDC');
 const HISTORY_STATUSES: SessionStatus[] = ['settled', 'revoked', 'expired'];
@@ -248,6 +266,15 @@ interface SessionLike {
   limit: number;
   limitMinor?: number;
   currency: string;
+  fundingMode?: FundingMode;
+  fundingSourceId?: string;
+  fundingGuarantee?: FundingGuarantee;
+  fundingRiskLabel?: FundingRiskLabel;
+  fundingState?: FundingSourceState;
+  fundingExecutionReady?: boolean;
+  fundingFailureCode?: string;
+  fundingFailureMessage?: string;
+  fundingAllocatedAt?: Date;
   duration: string;
   status: SessionStatus;
   iconType: IconType;
@@ -311,6 +338,25 @@ export interface SessionDto {
   remainingBalanceAtomic: string;
   currency: string;
   assetId: string;
+  funding?: {
+    mode: FundingMode;
+    sourceId: string;
+    guarantee: FundingGuarantee;
+    riskLabel: FundingRiskLabel;
+    state?: string;
+    executionReady: boolean;
+    failure?: { code: string; message?: string };
+    allocation?: {
+      authorizedAtomic: string;
+      spentAtomic: string;
+      releasedAtomic: string;
+      remainingAtomic: string;
+      state: string;
+    };
+    source?: ReturnType<typeof toFundingSourceDto>;
+    mongoExecutionReservationAtomic: string;
+    allocatedAt?: string;
+  };
   duration: string;
   status: SessionStatus;
   iconType: IconType;
@@ -341,6 +387,9 @@ export interface WalletDto {
   balanceAtomic: string;
   currency: string;
   assetId: string;
+  balanceSource: 'legacy_compatibility_projection';
+  balanceGuarantee: 'authorization_only';
+  fundingSources: Awaited<ReturnType<typeof listFundingSources>>;
 }
 
 export interface SessionsOverviewDto {
@@ -377,6 +426,8 @@ export interface CreateSessionInput {
   autoMicroCharges: boolean;
   singleUse: boolean;
   iconType: IconType;
+  fundingMode?: FundingMode;
+  fundingSourceId?: string;
 }
 
 export interface ChargeSessionInput {
@@ -428,6 +479,15 @@ export interface CreateSessionPolicyDto {
   fiber: {
     provider: string;
     network: string;
+  };
+  funding: {
+    modes: Array<{
+      mode: FundingMode;
+      guarantee: FundingGuarantee;
+      requiresNetworkProof: boolean;
+      executionAvailable: boolean;
+    }>;
+    sources: Awaited<ReturnType<typeof listFundingSources>>;
   };
   verifiedApps: VerifiedAppDto[];
 }
@@ -523,7 +583,12 @@ function toChargeAttemptDto(attempt: ChargeAttemptLike): ChargeAttemptDto {
   };
 }
 
-function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] = []): SessionDto {
+function toSessionDto(
+  session: SessionLike,
+  chargeAttempts: ChargeAttemptDto[] = [],
+  allocation?: FundingAllocationRecord,
+  fundingSource?: FundingSourceRecord
+): SessionDto {
   const spentMinor = sessionSpentMinor(session);
   const reservedMinor = session.reservedMinor ?? 0;
   const limitMinor = sessionLimitMinor(session);
@@ -586,6 +651,30 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
     remainingBalanceAtomic: legacyMinorToAtomicAmount(remainingBalanceMinor),
     currency: session.currency,
     assetId: assetIdForLegacyCurrency(session.currency),
+    funding: session.fundingMode && session.fundingSourceId && session.fundingGuarantee && session.fundingRiskLabel ? {
+      mode: session.fundingMode,
+      sourceId: session.fundingSourceId,
+      guarantee: session.fundingGuarantee,
+      riskLabel: session.fundingRiskLabel,
+      state: fundingSource?.state ?? session.fundingState,
+      executionReady: session.fundingExecutionReady === true && (
+        !fundingSource || fundingSource.state === 'available' || fundingSource.state === 'fully_allocated'
+      ),
+      failure: (fundingSource?.failureCode ?? session.fundingFailureCode) ? {
+        code: fundingSource?.failureCode ?? session.fundingFailureCode ?? 'FUNDING_UNAVAILABLE',
+        message: fundingSource?.failureMessage ?? session.fundingFailureMessage
+      } : undefined,
+      allocation: allocation ? {
+        authorizedAtomic: allocation.authorizedAtomic,
+        spentAtomic: allocation.spentAtomic,
+        releasedAtomic: allocation.releasedAtomic,
+        remainingAtomic: allocation.remainingAtomic,
+        state: allocation.state
+      } : undefined,
+      source: fundingSource ? toFundingSourceDto(fundingSource) : undefined,
+      mongoExecutionReservationAtomic: legacyMinorToAtomicAmount(reservedMinor),
+      allocatedAt: session.fundingAllocatedAt?.toISOString()
+    } : undefined,
     duration: session.duration,
     status: session.status,
     iconType: session.iconType,
@@ -611,7 +700,7 @@ function toSessionDto(session: SessionLike, chargeAttempts: ChargeAttemptDto[] =
   };
 }
 
-function toWalletDto(wallet: WalletRecord): WalletDto {
+function toWalletDto(wallet: WalletRecord, fundingSources: Awaited<ReturnType<typeof listFundingSources>> = []): WalletDto {
   const balanceMinor = walletBalanceMinor(wallet);
   return {
     contractVersion: PAYMENT_CONTRACT_VERSION,
@@ -623,7 +712,10 @@ function toWalletDto(wallet: WalletRecord): WalletDto {
     balanceMinor,
     balanceAtomic: legacyMinorToAtomicAmount(balanceMinor),
     currency: wallet.currency,
-    assetId: assetIdForLegacyCurrency(wallet.currency)
+    assetId: assetIdForLegacyCurrency(wallet.currency),
+    balanceSource: 'legacy_compatibility_projection',
+    balanceGuarantee: 'authorization_only',
+    fundingSources
   };
 }
 
@@ -632,10 +724,13 @@ async function publishOverview(walletId: string): Promise<void> {
 }
 
 export async function getCreateSessionPolicy(walletId: string): Promise<CreateSessionPolicyDto> {
-  const ownedApps = await AppModel.find({
-    ownerWalletId: walletId,
-    status: 'active'
-  }).sort({ createdAt: -1 }).lean<AppRecord[]>();
+  const [ownedApps, fundingSources] = await Promise.all([
+    AppModel.find({
+      ownerWalletId: walletId,
+      status: 'active'
+    }).sort({ createdAt: -1 }).lean<AppRecord[]>(),
+    listFundingSources(walletId)
+  ]);
   return {
     contractVersion: PAYMENT_CONTRACT_VERSION,
     limits: {
@@ -664,6 +759,23 @@ export async function getCreateSessionPolicy(walletId: string): Promise<CreateSe
     fiber: {
       provider: fiberProvider.kind,
       network: fiberProvider.network
+    },
+    funding: {
+      modes: [
+        {
+          mode: 'connected_wallet',
+          guarantee: 'authorization_only',
+          requiresNetworkProof: false,
+          executionAvailable: false
+        },
+        {
+          mode: 'secured_autopay',
+          guarantee: 'network_locked_operator_controlled',
+          requiresNetworkProof: true,
+          executionAvailable: true
+        }
+      ],
+      sources: fundingSources
     },
     verifiedApps: ownedApps.map((app) => ({
       id: app.appId,
@@ -1529,7 +1641,7 @@ export async function reconcileWalletBalanceWithCurrentVault(walletId: string): 
   }
 
   const [sessions, fundingRecords] = await Promise.all([
-    SessionModel.find({ ownerWalletId: walletId }).select('status limit limitMinor spent spentMinor currency').lean<Array<{ status?: string | null; limit?: number | null; limitMinor?: number | null; spent?: number | null; spentMinor?: number | null; currency?: string | null }>>(),
+    SessionModel.find({ ownerWalletId: walletId }).select('status limit limitMinor spent spentMinor currency fundingMode').lean<Array<{ status?: string | null; limit?: number | null; limitMinor?: number | null; spent?: number | null; spentMinor?: number | null; currency?: string | null; fundingMode?: string | null }>>(),
     WalletFundingModel.find({
       walletId,
       status: 'confirmed',
@@ -1546,6 +1658,7 @@ export async function reconcileWalletBalanceWithCurrentVault(walletId: string): 
   }, 0);
   const reservedMinor = sessions.reduce((total, session) => {
     if (!OPEN_STATUSES.includes(session.status as SessionStatus)) return total;
+    if (session.fundingMode === 'connected_wallet') return total;
     const currency = session.currency ?? CREATE_SESSION_POLICY.currency;
     const limitMinor = fallbackMinorUnits(session.limitMinor, session.limit, currency);
     const sessionSpentMinor = fallbackMinorUnits(session.spentMinor, session.spent, currency);
@@ -1559,6 +1672,11 @@ export async function reconcileWalletBalanceWithCurrentVault(walletId: string): 
   try {
     const liveCells = await listLiveVaultCells({ lock: vault.script, limit: 500 });
     const liveCapacityMinor = liveCells.reduce((total, cell) => total + cell.capacityShannons, 0);
+    await recordSecuredFundingBalance({
+      ownerWalletId: walletId,
+      sourceReference: vault.scriptHash,
+      lockedMinor: liveCapacityMinor
+    });
     const liveAvailableMinor = clampMinorUnits(liveCapacityMinor - reservedMinor);
     if (fundedMinor > 0) {
       availableMinor = Math.min(availableMinor, liveAvailableMinor);
@@ -1740,9 +1858,15 @@ export async function getSessionsOverview(walletId: string): Promise<SessionsOve
   ]);
 
   const sessionIds = sessions.map((session) => session.publicId);
-  const attempts = sessionIds.length === 0
-    ? []
-    : await ChargeAttemptModel.find({ sessionId: { $in: sessionIds } }).sort({ createdAt: -1 }).limit(200).lean<ChargeAttemptLike[]>();
+  const [attempts, allocations, fundingSources] = await Promise.all([
+    sessionIds.length === 0
+      ? Promise.resolve([])
+      : ChargeAttemptModel.find({ sessionId: { $in: sessionIds } }).sort({ createdAt: -1 }).limit(200).lean<ChargeAttemptLike[]>(),
+    sessionIds.length === 0
+      ? Promise.resolve([])
+      : FundingAllocationModel.find({ sessionId: { $in: sessionIds } }).lean<FundingAllocationRecord[]>(),
+    FundingSourceModel.find({ ownerWalletId: walletId }).sort({ createdAt: 1 }).lean<FundingSourceRecord[]>()
+  ]);
   const attemptsBySession = new Map<string, ChargeAttemptDto[]>();
   for (const attempt of attempts) {
     const existing = attemptsBySession.get(attempt.sessionId) ?? [];
@@ -1752,10 +1876,17 @@ export async function getSessionsOverview(walletId: string): Promise<SessionsOve
     }
   }
 
-  const sessionDtos = sessions.map((session) => toSessionDto(session, attemptsBySession.get(session.publicId) ?? []));
+  const allocationBySession = new Map(allocations.map((allocation) => [allocation.sessionId, allocation]));
+  const sourceById = new Map(fundingSources.map((source) => [source.sourceId, source]));
+  const sessionDtos = sessions.map((session) => toSessionDto(
+    session,
+    attemptsBySession.get(session.publicId) ?? [],
+    allocationBySession.get(session.publicId),
+    session.fundingSourceId ? sourceById.get(session.fundingSourceId) : undefined
+  ));
   return {
     contractVersion: PAYMENT_CONTRACT_VERSION,
-    wallet: toWalletDto(wallet.toObject()),
+    wallet: toWalletDto(wallet.toObject(), fundingSources.map(toFundingSourceDto)),
     activeSessions: sessionDtos.filter((session) => OPEN_STATUSES.includes(session.status)),
     historySessions: sessionDtos.filter((session) => HISTORY_STATUSES.includes(session.status))
   };
@@ -1778,6 +1909,15 @@ export async function createSession(input: CreateSessionInput, walletId: string)
   }
 
   await reconcileWalletBalanceWithCurrentVault(walletId);
+  const fundingWallet = await WalletModel.findOne({ walletId }).lean<WalletRecord | null>();
+  if (!fundingWallet) throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connect with JoyID before creating a FiberPass.');
+  const fundingSelection = await resolveFundingSelection({
+    ownerWalletId: walletId,
+    walletAddress: fundingWallet.address,
+    amountMinor: limitMinor,
+    mode: input.fundingMode,
+    sourceId: input.fundingSourceId
+  });
 
   const expiryAt = validateExpiryAt(input.expiryAt);
   const paymentPurpose = normalizePaymentPurpose(input.paymentPurpose);
@@ -1836,14 +1976,17 @@ export async function createSession(input: CreateSessionInput, walletId: string)
 
   let createdSession: SessionRecord | undefined;
   await SessionModel.db.transaction(async (mongoSession) => {
-    const wallet = await WalletModel.findOneAndUpdate(
-      { walletId, balanceMinor: { $gte: limitMinor } },
-      { $inc: { balanceMinor: -limitMinor, balance: -limit } },
-      { new: true, session: mongoSession }
-    );
+    const wallet = await WalletModel.findOne({ walletId }).session(mongoSession);
     if (!wallet) {
-      throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this FiberPass limit.');
+      throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connected wallet was not found during pass allocation.');
     }
+    await allocateFundingForSession({
+      selection: fundingSelection,
+      ownerWalletId: walletId,
+      sessionId: publicId,
+      amountMinor: limitMinor,
+      session: mongoSession
+    });
 
     const [created] = await SessionModel.create([{
       ownerWalletId: walletId,
@@ -1886,6 +2029,17 @@ export async function createSession(input: CreateSessionInput, walletId: string)
       currency: input.currency,
       assetId: assetIdForLegacyCurrency(input.currency),
       moneyContractVersion: 2,
+      fundingMode: fundingSelection.mode,
+      fundingSourceId: fundingSelection.sourceId,
+      fundingGuarantee: fundingSelection.guarantee,
+      fundingRiskLabel: fundingSelection.riskLabel,
+      fundingState: fundingSelection.mode === 'secured_autopay' ? 'available' : 'unverified',
+      fundingExecutionReady: fundingSelection.executionReady,
+      fundingFailureCode: fundingSelection.failureCode,
+      fundingFailureMessage: fundingSelection.failureCode
+        ? 'This connector cannot execute from the connected wallet until a scoped wallet authorization is available.'
+        : undefined,
+      fundingAllocatedAt: new Date(),
       duration: input.duration,
       status: 'active',
       iconType: registeredApp ? 'code' : input.iconType,
@@ -1912,7 +2066,7 @@ export async function createSession(input: CreateSessionInput, walletId: string)
     throw new ApiError(500, 'SESSION_CREATE_FAILED', 'Session transaction completed without creating a pass.');
   }
   await sendSessionRecipientInvites(createdSession, preparedRecipients.invites).catch(() => undefined);
-  await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: resolvedAppId, appGrantCreated: Boolean(registeredApp), paymentPurpose, releaseCadence, nextReleaseAt, recipientInviteCount: preparedRecipients.invites.length } }).catch(() => undefined);
+  await writeAuditLog({ actorWalletId: walletId, action: 'session.created', targetType: 'session', targetId: publicId, metadata: { limitMinor, appId: resolvedAppId, appGrantCreated: Boolean(registeredApp), paymentPurpose, releaseCadence, nextReleaseAt, recipientInviteCount: preparedRecipients.invites.length, fundingMode: fundingSelection.mode, fundingSourceId: fundingSelection.sourceId, fundingGuarantee: fundingSelection.guarantee, fundingRiskLabel: fundingSelection.riskLabel } }).catch(() => undefined);
   void runScheduledLiquidityPreparation({ ownerWalletId: walletId, sessionId: publicId, limit: 1 }).catch(() => undefined);
 
   const overview = await getSessionsOverview(walletId);
@@ -2148,7 +2302,6 @@ export async function topUpSession(
 
   await reconcileWalletBalanceWithCurrentVault(walletId);
   const operationId = randomUUID();
-  const topUpAmount = fromMinorUnits(topUpMinor, initial.currency);
   let replayed = false;
   let claimedSession: SessionRecord | undefined;
 
@@ -2168,14 +2321,7 @@ export async function topUpSession(
       throw sessionTransitionPending(session);
     }
 
-    const wallet = await WalletModel.findOneAndUpdate(
-      { walletId, balanceMinor: { $gte: topUpMinor } },
-      { $inc: { balanceMinor: -topUpMinor, balance: -topUpAmount } },
-      { new: true, session: mongoSession }
-    );
-    if (!wallet) {
-      throw new ApiError(400, 'INSUFFICIENT_WALLET_BALANCE', 'Wallet balance is too low for this top up.');
-    }
+    await topUpFundingAllocation(publicId, topUpMinor, mongoSession);
 
     session.lifecycleState = 'top_up_pending';
     session.lifecycleOperationId = operationId;
@@ -2297,13 +2443,9 @@ async function completeCloseLifecycle(input: {
     ));
     await session.save({ session: mongoSession });
 
-    const walletResult = await WalletModel.updateOne(
-      { walletId: input.walletId },
-      { $inc: { balanceMinor: refundMinor, balance: refundAmount } },
-      { session: mongoSession }
-    );
-    if (walletResult.matchedCount !== 1) {
-      throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connected wallet was not found while refunding the closed pass.');
+    const releasedMinor = await releaseFundingAllocation(input.publicId, mongoSession);
+    if (releasedMinor !== 0 && releasedMinor !== refundMinor) {
+      throw new Error('Pass refund and funding allocation release do not match.');
     }
     completed = true;
   });
@@ -2714,6 +2856,29 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     expiresAt: session.expiryAt instanceof Date ? session.expiryAt.toISOString() : undefined
   };
   const connector = paymentConnectorRegistry.require({ rail, network: paymentIntent.network, assetId });
+  const fundingStatus = await fundingExecutionStatus(input.sessionId, amountMinor);
+  if (!fundingStatus.ready) {
+    const error = new ApiError(402, fundingStatus.code ?? 'FUNDING_UNAVAILABLE', fundingStatus.message ?? 'The pass funding source is unavailable.');
+    await writeChargeFailureAudit({ request: input, ownerWalletId, amountMinor, error });
+    throw error;
+  }
+  if (session.fundingMode) {
+    const connectorCapability = connector.capabilities().find((capability) => (
+      capability.rail === rail
+      && capability.network.toLowerCase() === paymentIntent.network.toLowerCase()
+      && capability.assetId === assetId
+    ));
+    const fundingCapability = connectorCapability?.funding.find((capability) => capability.mode === session.fundingMode);
+    if (!fundingCapability?.supportsExecution) {
+      const error = new ApiError(
+        409,
+        session.fundingMode === 'connected_wallet' ? 'CONNECTED_WALLET_EXECUTION_UNAVAILABLE' : 'FUNDING_MODE_EXECUTION_UNAVAILABLE',
+        'The selected connector cannot execute this pass funding mode.'
+      );
+      await writeChargeFailureAudit({ request: input, ownerWalletId, amountMinor, error });
+      throw error;
+    }
+  }
   let connectorQuote;
   if (!existingAttempt || existingAttempt.providerStatus === 'not_started') {
     try {
@@ -2747,6 +2912,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     const limitMinor = sessionLimitMinor(refreshed);
     prependLogs(session, newLog(input.type, amountMinor, currency));
 
+    let releaseUnusedFunding = false;
     if (nextSpentMinor >= limitMinor) {
       const result = await settleFiberSessionIfOpen({
         session,
@@ -2775,7 +2941,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
       session.fiberProofId = result.proofId;
       session.expiryTime = 'Single-use charge completed';
       prependLogs(session, newLog('Single-use Session Settled (Refunded ' + refundAmount.toLocaleString('en-US') + ' ' + currency + ')'));
-      await WalletModel.updateOne({ walletId: ownerWalletId }, { $inc: { balanceMinor: refundMinor, balance: refundAmount } });
+      releaseUnusedFunding = true;
     } else {
       session.fiberStatus = 'active';
       const recipientWalletCount = Array.isArray(session.recipientWallets) ? session.recipientWallets.length : 0;
@@ -2790,6 +2956,7 @@ export async function chargeSession(input: ChargeSessionInput): Promise<Sessions
     }
 
     await session.save();
+    if (releaseUnusedFunding) await releaseFundingAllocationTransaction(input.sessionId);
     const completedSpentMinor = sessionSpentMinor(session.toObject());
     const remainingBalanceMinor = clampMinorUnits(sessionLimitMinor(session.toObject()) - completedSpentMinor);
     await ChargeAttemptModel.updateOne(

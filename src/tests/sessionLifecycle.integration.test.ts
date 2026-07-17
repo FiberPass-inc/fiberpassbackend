@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { SessionModel } from '../models/session.model.js';
 import { WalletFundingModel } from '../models/walletFunding.model.js';
 import { WalletModel } from '../models/wallet.model.js';
+import { FundingAllocationModel, FundingSourceModel } from '../models/fundingSource.model.js';
 
 const uri = process.env.LIFECYCLE_TEST_MONGODB_URI;
 if (!uri) {
@@ -26,7 +27,9 @@ try {
   await Promise.all([
     SessionModel.syncIndexes(),
     WalletFundingModel.syncIndexes(),
-    WalletModel.syncIndexes()
+    WalletModel.syncIndexes(),
+    FundingAllocationModel.syncIndexes(),
+    FundingSourceModel.syncIndexes()
   ]);
 
   const fundingWalletId = 'wallet-funding-atomic';
@@ -99,7 +102,7 @@ try {
   const created = await createSession(createInput, lifecycleWalletId);
   const publicId = created.activeSessions[0]?.id;
   assert.ok(publicId);
-  assert.equal((await WalletModel.findOne({ walletId: lifecycleWalletId }).lean())?.balanceMinor, 400_000_000);
+  assert.equal((await WalletModel.findOne({ walletId: lifecycleWalletId }).lean())?.balanceMinor, 500_000_000);
 
   await Promise.allSettled(
     Array.from({ length: 20 }, () => topUpSession(publicId, lifecycleWalletId, 0.5, 'top-up-idempotency-key'))
@@ -107,7 +110,7 @@ try {
   const toppedUp = await SessionModel.findOne({ publicId }).lean();
   assert.equal(toppedUp?.limitMinor, 150_000_000);
   assert.equal(toppedUp?.lifecycleState, 'idle');
-  assert.equal((await WalletModel.findOne({ walletId: lifecycleWalletId }).lean())?.balanceMinor, 350_000_000);
+  assert.equal((await WalletModel.findOne({ walletId: lifecycleWalletId }).lean())?.balanceMinor, 500_000_000);
 
   await Promise.allSettled(
     Array.from({ length: 20 }, (_, index) => index % 2 === 0

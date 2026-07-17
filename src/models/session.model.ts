@@ -1,5 +1,6 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
 import { assetIdField, atomicAmountField, moneyContractVersionField } from './moneyFields.js';
+import { FUNDING_GUARANTEES, FUNDING_MODES, FUNDING_RISK_LABELS, FUNDING_SOURCE_STATES } from '../domain/funding.js';
 
 export const SESSION_STATUSES = ['active', 'paused', 'settled', 'revoked', 'expired'] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -135,6 +136,15 @@ const sessionSchema = new Schema(
     currency: { type: String, required: true, default: 'CKB' },
     assetId: assetIdField(),
     moneyContractVersion: moneyContractVersionField(),
+    fundingMode: { type: String, enum: FUNDING_MODES, index: true },
+    fundingSourceId: { type: String, trim: true, index: true },
+    fundingGuarantee: { type: String, enum: FUNDING_GUARANTEES },
+    fundingRiskLabel: { type: String, enum: FUNDING_RISK_LABELS },
+    fundingState: { type: String, enum: FUNDING_SOURCE_STATES },
+    fundingExecutionReady: { type: Boolean },
+    fundingFailureCode: { type: String, trim: true },
+    fundingFailureMessage: { type: String, trim: true },
+    fundingAllocatedAt: { type: Date },
     duration: { type: String, required: true },
     status: { type: String, enum: SESSION_STATUSES, required: true, default: 'active', index: true },
     iconType: { type: String, enum: ICON_TYPES, required: true, default: 'rpc' },

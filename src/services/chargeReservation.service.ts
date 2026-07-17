@@ -4,6 +4,7 @@ import { legacyMinorToAtomicAmount } from '../lib/money.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { SessionModel, type SessionRecord } from '../models/session.model.js';
+import { releaseFundingAllocation, spendFundingAllocation } from './fundingSource.service.js';
 
 const EXECUTION_LEASE_MS = 60_000;
 
@@ -371,8 +372,8 @@ export async function finalizeChargeReservation(attemptId: string): Promise<Char
     }
 
     const amountMinor = attempt.amountMinor ?? 0;
-    const [sessionResult, dailyResult] = await Promise.all([
-      SessionModel.updateOne(
+    const [updatedSession, dailyResult] = await Promise.all([
+      SessionModel.findOneAndUpdate(
         { publicId: attempt.sessionId, reservedMinor: { $gte: amountMinor } },
         {
           $inc: {
@@ -386,7 +387,7 @@ export async function finalizeChargeReservation(attemptId: string): Promise<Char
             fiberNetwork: attempt.network
           }
         },
-        { session: mongoSession }
+        { new: true, session: mongoSession }
       ),
       ChargeDailyCounterModel.updateOne(
         { sessionId: attempt.sessionId, day: attempt.reservationDay, reservedMinor: { $gte: amountMinor } },
@@ -394,9 +395,11 @@ export async function finalizeChargeReservation(attemptId: string): Promise<Char
         { session: mongoSession }
       )
     ]);
-    if (sessionResult.modifiedCount !== 1 || dailyResult.modifiedCount !== 1) {
+    if (!updatedSession || dailyResult.modifiedCount !== 1) {
       throw new Error('Charge reservation counters could not be finalized consistently.');
     }
+    await spendFundingAllocation(attempt.sessionId, amountMinor, mongoSession);
+    if (updatedSession.singleUse) await releaseFundingAllocation(attempt.sessionId, mongoSession);
 
     attempt.status = 'succeeded';
     attempt.reserveStatus = 'debited';

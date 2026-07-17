@@ -12,6 +12,12 @@ import { WalletModel, type WalletRecord } from '../models/wallet.model.js';
 import { getSessionsOverview, type SessionsOverviewDto } from './session.service.js';
 import { writeAuditLog } from './audit.service.js';
 import {
+  listFundingSources,
+  recordConnectedWalletBalance,
+  recordSecuredFundingProof,
+  type FundingSourceDto
+} from './fundingSource.service.js';
+import {
   findVaultDepositInTransaction,
   getCkbBalanceForAddress,
   getCkbBalanceForLock,
@@ -43,6 +49,10 @@ export interface WalletFundingConfigDto {
   depositMode: 'vault' | 'treasury';
   depositAddress: string;
   configured: boolean;
+  fundingMode: 'secured_autopay';
+  guarantee: 'network_locked_operator_controlled';
+  riskLabel: 'unaudited_operator_contract';
+  networkProofRequired: true;
   minAmount: number;
   minAmountMinor: number;
   minAmountAtomic: string;
@@ -95,6 +105,10 @@ export interface WalletFundingRequestDto {
   chainCapacityAtomic?: string;
   chainConfirmedAt?: string;
   status: WalletFundingRecord['status'];
+  fundingMode: 'secured_autopay';
+  guarantee: 'network_locked_operator_controlled';
+  riskLabel: 'unaudited_operator_contract' | 'legacy_operator_vault';
+  networkProofRequired: true;
   createdAt: string;
   confirmedAt?: string;
 }
@@ -140,6 +154,7 @@ export interface WalletFundingOverviewDto {
   requests: WalletFundingRequestDto[];
   chain: WalletChainStateDto;
   activities: WalletChainActivityDto[];
+  sources: FundingSourceDto[];
   recoveredDeposits?: number;
 }
 
@@ -185,6 +200,10 @@ function getFundingConfig(wallet?: Pick<WalletRecord, 'walletId' | 'address'>): 
     depositMode,
     depositAddress,
     configured: Boolean(depositAddress),
+    fundingMode: 'secured_autopay',
+    guarantee: 'network_locked_operator_controlled',
+    riskLabel: 'unaudited_operator_contract',
+    networkProofRequired: true,
     minAmount: fromMinorUnits(minAmountMinor, FUNDING_CURRENCY),
     minAmountMinor,
     minAmountAtomic: legacyMinorToAtomicAmount(minAmountMinor),
@@ -253,6 +272,10 @@ function toFundingDto(record: WalletFundingRecord & { createdAt?: Date; confirme
     chainCapacityAtomic: record.chainCapacityShannons == null ? undefined : legacyMinorToAtomicAmount(record.chainCapacityShannons),
     chainConfirmedAt: record.chainConfirmedAt?.toISOString(),
     status: record.status,
+    fundingMode: 'secured_autopay',
+    guarantee: 'network_locked_operator_controlled',
+    riskLabel: record.vaultOwnerLockHashSource === 'legacy-wallet-id-derived' ? 'legacy_operator_vault' : 'unaudited_operator_contract',
+    networkProofRequired: true,
     createdAt: (record.createdAt ?? new Date()).toISOString(),
     confirmedAt: record.confirmedAt?.toISOString()
   };
@@ -345,6 +368,29 @@ export async function applyConfirmedFunding(input: {
       if (walletResult.matchedCount !== 1) {
         throw new ApiError(404, 'WALLET_NOT_FOUND', 'Connected wallet was not found while crediting funding.');
       }
+      const fundingSourceId = await recordSecuredFundingProof({
+        ownerWalletId: walletId,
+        sourceReference: current.vaultScriptHash ?? current.depositAddress,
+        amountMinor: creditedMinor,
+        proofId,
+        proofType: 'ckb_out_point',
+        observedAt: now,
+        legacyOperatorVault: current.vaultOwnerLockHashSource === 'legacy-wallet-id-derived',
+        session: mongoSession
+      });
+      await WalletFundingModel.updateOne(
+        { _id: confirmed._id },
+        {
+          $set: {
+            fundingSourceId,
+            fundingGuarantee: 'network_locked_operator_controlled',
+            fundingRiskLabel: current.vaultOwnerLockHashSource === 'legacy-wallet-id-derived'
+              ? 'legacy_operator_vault'
+              : 'unaudited_operator_contract'
+          }
+        },
+        { session: mongoSession }
+      );
       credited = true;
     });
   } catch (error) {
@@ -424,6 +470,11 @@ async function getWalletChainState(walletId: string, address: string): Promise<W
       liveCellCount: balance.liveCellCount,
       status: 'ok'
     };
+    await recordConnectedWalletBalance({
+      ownerWalletId: walletId,
+      walletAddress: address,
+      availableMinor: balance.balanceShannons
+    });
   } catch (error) {
     walletBalance = { address, ...emptyBalance('unavailable', error instanceof Error ? error.message : 'Could not load JoyID wallet chain balance.') };
   }
@@ -578,12 +629,16 @@ async function buildFundingOverview(walletId: string, recoveredDeposits = 0): Pr
   const wallet = await getWalletOrThrow(walletId);
   const requests = await WalletFundingModel.find({ walletId }).sort({ createdAt: -1 }).limit(50).lean<(WalletFundingRecord & { createdAt?: Date; confirmedAt?: Date; chainConfirmedAt?: Date })[]>();
   const chain = await getWalletChainState(walletId, wallet.address);
-  const activities = await buildWalletActivities(walletId, chain);
+  const [activities, sources] = await Promise.all([
+    buildWalletActivities(walletId, chain),
+    listFundingSources(walletId)
+  ]);
   return {
     config: getFundingConfig(wallet.toObject()),
     requests: requests.map(toFundingDto),
     chain,
     activities,
+    sources,
     recoveredDeposits
   };
 }

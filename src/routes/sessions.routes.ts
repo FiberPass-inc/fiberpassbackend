@@ -5,6 +5,7 @@ import { FIBER_CKB_ADDRESS_ERROR, isFiberCkbAddress } from '../lib/fiberAddress.
 import { liveEvents } from '../lib/liveEvents.js';
 import { requireAuth, requireStreamTicket } from '../middleware/auth.middleware.js';
 import { SESSION_APP_PERMISSIONS } from '../models/session.model.js';
+import { FUNDING_MODES } from '../domain/funding.js';
 import {
   CREATE_SESSION_POLICY,
   claimRecipientWallet,
@@ -64,7 +65,9 @@ const createSessionSchema = z.object({
   expiryTime: z.string().trim().min(1).max(120),
   autoMicroCharges: z.coerce.boolean().default(true),
   singleUse: z.coerce.boolean().default(false),
-  iconType: z.string().refine(isValidIconType, 'Invalid icon type')
+  iconType: z.string().refine(isValidIconType, 'Invalid icon type'),
+  fundingMode: z.enum(FUNDING_MODES).optional(),
+  fundingSourceId: z.string().trim().min(8).max(120).optional()
 });
 
 const topUpSchema = z.object({

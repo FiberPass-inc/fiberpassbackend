@@ -75,6 +75,16 @@ try {
     connectorCapabilities.body.capabilities.map((capability: { rail: string }) => capability.rail).sort(),
     ['ckb_onchain', 'fiber']
   );
+  assert.ok(connectorCapabilities.body.capabilities.every((capability: { funding?: unknown[] }) => Array.isArray(capability.funding)));
+  assert.equal(
+    connectorCapabilities.body.capabilities[0].funding.find((funding: { mode: string }) => funding.mode === 'secured_autopay').requiresNetworkProof,
+    true
+  );
+  const fundingSources = await request(app)
+    .get('/v2/wallet/funding-sources')
+    .set('Authorization', 'Bearer ' + token)
+    .expect(200);
+  assert.deepEqual(fundingSources.body, { sources: [] });
   await request(app).get('/v2/payment-connectors').expect(401);
   const expiredTicket = await createStreamTicket(authContext);
   assert.deepEqual(await getAuthContextFromStreamTicket(expiredTicket.ticket), authContext);

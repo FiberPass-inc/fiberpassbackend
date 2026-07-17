@@ -7,6 +7,7 @@ import { InvoiceModel, PaymentBatchModel, PaymentJobModel, RecipientModel } from
 import { ChargeAttemptModel } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { DomainEventModel } from '../models/domainEvent.model.js';
+import { FundingAllocationModel, FundingSourceModel } from '../models/fundingSource.model.js';
 import {
   ClaimChannelModel,
   NotificationEndpointModel,
@@ -27,6 +28,7 @@ import { WorkerLeaseModel } from '../models/workerLease.model.js';
 import { encryptWebhookSecret } from '../services/webhookSecurity.service.js';
 import { migrateLegacyMoneyToAtomicStrings } from './atomicMoney.js';
 import { migrateRecipientIdentitySeparation } from './identitySeparation.js';
+import { migrateLegacyFundingSources } from './fundingSources.js';
 
 export interface MigrationDefinition {
   id: string;
@@ -47,6 +49,8 @@ const indexedModels = [
   ChargeAttemptModel,
   ChargeDailyCounterModel,
   DomainEventModel,
+  FundingSourceModel,
+  FundingAllocationModel,
   WalletPrincipalModel,
   RecipientIdentityModel,
   PaymentDestinationModel,
@@ -145,10 +149,21 @@ const separateRecipientIdentityData: MigrationDefinition = {
   }
 };
 
+const modelFundingSources: MigrationDefinition = {
+  id: '006-model-funding-sources',
+  description: 'Separate connected-wallet authorization from proof-backed secured auto-pay funding.',
+  async up() {
+    await migrateLegacyFundingSources();
+    await FundingSourceModel.createIndexes();
+    await FundingAllocationModel.createIndexes();
+  }
+};
+
 export const migrations: readonly MigrationDefinition[] = [
   createProductionIndexes,
   encryptLegacyWebhookSecrets,
   createSecurityControlIndexes,
   migrateAtomicMoneyContracts,
-  separateRecipientIdentityData
+  separateRecipientIdentityData,
+  modelFundingSources
 ];

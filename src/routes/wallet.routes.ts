@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { confirmWalletFundingRequest, createWalletFundingRequest, getWalletVaultRecovery, listWalletFunding, syncWalletFunding } from '../services/walletFunding.service.js';
+import { listFundingSources } from '../services/fundingSource.service.js';
 import type { AuthenticatedRequest } from '../types/auth.js';
 
 const fundingRequestSchema = z.object({
@@ -22,6 +23,11 @@ export const walletRouter = Router();
 walletRouter.get('/wallet/funding', requireAuth, asyncHandler(async (request, response) => {
   const { walletId } = (request as AuthenticatedRequest).auth;
   response.json(await listWalletFunding(walletId));
+}));
+
+walletRouter.get('/wallet/funding-sources', requireAuth, asyncHandler(async (request, response) => {
+  const { walletId } = (request as AuthenticatedRequest).auth;
+  response.json({ sources: await listFundingSources(walletId) });
 }));
 
 walletRouter.get('/wallet/vault-recovery', requireAuth, asyncHandler(async (request, response) => {

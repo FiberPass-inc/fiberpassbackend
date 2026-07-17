@@ -12,6 +12,8 @@ See [docs/system-design.md](docs/system-design.md) for the full FiberPass archit
 
 See [docs/vault-recovery.md](docs/vault-recovery.md) for JoyID-bound vault ownership, owner-signed reclaim handoff, legacy synthetic-vault migration, and lifecycle transaction guarantees.
 
+See [docs/funding-sources-and-guarantees.md](docs/funding-sources-and-guarantees.md) for connected-wallet and secured auto-pay modes, exact accounting invariants, proof freshness, source states, API fields, and conservative legacy migration.
+
 See [docs/worker-reliability.md](docs/worker-reliability.md) for the required API/payment/reconciliation/webhook services, durable live events, heartbeats, locks, and delivery guarantees.
 
 See [docs/webhook-security.md](docs/webhook-security.md) for webhook destination restrictions, encrypted secret storage, retry behavior, and the HMAC verification contract.
@@ -93,6 +95,7 @@ for legacy clients. `/v2` aliases expose the additive exact-money contract; see
 - `GET /auth/me`
 - `POST /auth/logout`
 - `GET /wallet/funding`
+- `GET /wallet/funding-sources`
 - `GET /wallet/vault-recovery`
 - `POST /wallet/funding`
 - `POST /wallet/funding/sync`
