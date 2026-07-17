@@ -2,7 +2,10 @@
 
 This folder contains CKB lock-script drafts owned by the backend repo.
 
-The first script is `fiberpass-vault-lock`, a testnet-oriented vault lock for holding user-funded cells that back FiberPass payment sessions.
+The first script is `fiberpass-vault-lock`, an unaudited testnet contract draft
+for holding user-funded cells that back FiberPass payment sessions. Its
+owner-bound address is not a wallet and FiberPass does not generate a seed for
+it.
 
 ## Vault Model
 

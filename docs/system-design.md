@@ -1,6 +1,9 @@
 # FiberPass System Design
 
-FiberPass is wallet and payment UX infrastructure for prepaid, revocable Fiber Network payment sessions.
+FiberPass is wallet-connected payment infrastructure for prepaid, revocable
+payment sessions. The current implementation is CKB/Fiber-specific; the
+Bitcoin and Lightning connector work in [`TASKS.md`](../TASKS.md) is planned, not yet
+implemented.
 
 The core idea is simple: a user approves a capped payment pass once, then FiberPass handles balance reservation, Fiber liquidity preparation, payment execution, settlement tracking, and receipts.
 
@@ -18,7 +21,7 @@ flowchart LR
   UI[FiberPass Frontend<br/>React + Vite]
   API[FiberPass API<br/>Node.js + Express]
   DB[(MongoDB<br/>Sessions, Wallets, Attempts)]
-  Vault[Per-User Vault Cells<br/>CKB Testnet]
+  Vault[Owner-Bound Contract Cells<br/>CKB Testnet Draft]
   Worker[Payment Worker<br/>Liquidity + Payout Jobs]
   Fiber[Fiber Node RPC<br/>Railway]
   Exit[Fiber Exit Settlement<br/>CKB Transaction]
@@ -75,10 +78,11 @@ sequenceDiagram
 - User signs the challenge.
 - Backend verifies ownership and creates an authenticated API session.
 
-### 2. Vault Funding
+### 2. CKB Testnet Contract Funding
 
 - User creates or confirms a funding request.
-- Backend derives the logged-in user's vault address.
+- Backend derives an owner-bound testnet contract address. It is not a wallet
+  issued by FiberPass.
 - CKB testnet activity is synced and reconciled.
 - The dashboard shows the user's own FiberPass available balance, not cumulative vault funds.
 

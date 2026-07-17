@@ -1,4 +1,8 @@
-# Vault Ownership and Recovery
+# CKB Testnet Contract Ownership and Recovery
+
+This recovery design applies only to the unaudited CKB testnet contract draft.
+The contract address is not a wallet issued by FiberPass. Mainnet use requires
+a separate security review, audited deployment, and explicit custody decision.
 
 FiberPass vaults created by the current backend are bound to the authenticated JoyID CKB lock. The vault lock args store `computeScriptHash(parseAddress(wallet.address))`; they are not derived from an internal wallet ID.
 
