@@ -20,9 +20,11 @@ const { createAuthChallenge, createStreamTicket, getAuthContextFromStreamTicket,
 const { createInvoice, createRecipient, runPaymentWorkerOnce } = await import('../services/automation.service.js');
 const { getCreateSessionPolicy } = await import('../services/session.service.js');
 const { createRateLimitMiddleware } = await import('../middleware/rateLimit.middleware.js');
+const { migrateLegacyMoneyToAtomicStrings } = await import('../migrations/atomicMoney.js');
 
 const dbName = 'fiberpass_platform_' + randomUUID().replace(/-/g, '');
 await mongoose.connect(uri, { dbName, serverSelectionTimeoutMS: 10_000 });
+const { app } = await import('../app.js');
 
 const walletAddress = 'ckt1qrfrwcdnvssswdwpn3s9v8fp87emat306ctjwsm3nmlkjg8qyza2cqgqqxlert9yy2g2hhklyq8m24sakhfaqlyf4qd4c3fl';
 const walletId = 'platform-wallet';
@@ -42,6 +44,10 @@ try {
     SessionModel.syncIndexes(),
     StreamTicketModel.syncIndexes()
   ]);
+  const v2Meta = await request(app).get('/v2/meta').expect(200);
+  assert.equal(v2Meta.headers['x-fiberpass-contract-version'], '2.0');
+  assert.equal(v2Meta.body.contractVersion, '2.0');
+  assert.equal(v2Meta.body.paymentContracts.amounts, 'canonical-atomic-unit-strings');
 
   const challenges = await Promise.all(Array.from({ length: 10 }, () => createAuthChallenge(walletAddress)));
   assert.equal(new Set(challenges.map((challenge) => challenge.challengeId)).size, 10);
@@ -115,6 +121,10 @@ try {
     }
   ]);
   const createPolicy = await getCreateSessionPolicy(walletId);
+  assert.equal(createPolicy.contractVersion, '2.0');
+  assert.equal(createPolicy.limits.assetId, 'ckb:ckb');
+  assert.equal(createPolicy.limits.minAtomic, '1000000');
+  assert.equal(createPolicy.limits.maxAtomic, '10000000000000');
   assert.equal(createPolicy.verifiedApps.length, 1);
   assert.deepEqual(createPolicy.verifiedApps[0], {
     id: appId,
@@ -168,6 +178,10 @@ try {
     idempotencyKey: 'platform-invoice-idempotency'
   })));
   assert.equal(invoices.filter((result) => result.status === 'fulfilled').length, 1);
+  const createdInvoice = invoices.find((result) => result.status === 'fulfilled');
+  assert.equal(createdInvoice?.status === 'fulfilled' ? createdInvoice.value.contractVersion : undefined, '2.0');
+  assert.equal(createdInvoice?.status === 'fulfilled' ? createdInvoice.value.assetId : undefined, 'ckb:ckb');
+  assert.equal(createdInvoice?.status === 'fulfilled' ? createdInvoice.value.amountAtomic : undefined, '10000000');
   assert.equal(await InvoiceModel.countDocuments({ appId, idempotencyKey: 'platform-invoice-idempotency' }), 1);
 
   await PaymentJobModel.create({
@@ -185,6 +199,14 @@ try {
     attempts: 0,
     maxAttempts: 3
   });
+  await migrateLegacyMoneyToAtomicStrings();
+  const migratedSession = await SessionModel.findOne({ publicId: sessionId }).lean();
+  const migratedInvoice = await InvoiceModel.findOne({ appId, idempotencyKey: 'platform-invoice-idempotency' }).lean();
+  const migratedJob = await PaymentJobModel.findOne({ jobId: 'platform-orphan-job' }).lean();
+  assert.equal(migratedSession?.limitAtomic, '1000000000');
+  assert.equal(migratedSession?.spentAtomic, '0');
+  assert.equal(migratedInvoice?.amountAtomic, '10000000');
+  assert.equal(migratedJob?.amountAtomic, '10000000');
   const workerRuns = await Promise.all(
     Array.from({ length: 20 }, (_, index) => runPaymentWorkerOnce({ workerId: 'platform-worker-' + index, limit: 1 }))
   );

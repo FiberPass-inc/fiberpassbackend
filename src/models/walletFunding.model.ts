@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from 'mongoose';
+import { assetIdField, atomicAmountField, moneyContractVersionField } from './moneyFields.js';
 
 export const WALLET_FUNDING_STATUSES = ['pending', 'confirmed'] as const;
 export type WalletFundingStatus = (typeof WALLET_FUNDING_STATUSES)[number];
@@ -12,7 +13,10 @@ const walletFundingSchema = new Schema(
     walletAddress: { type: String, required: true, trim: true },
     amount: { type: Number, required: true, min: 0 },
     amountMinor: { type: Number, required: true, min: 1 },
+    amountAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: 'CKB' },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     network: { type: String, required: true, trim: true },
     depositMode: { type: String, enum: WALLET_FUNDING_DEPOSIT_MODES, required: true, trim: true, default: 'treasury' },
     depositAddress: { type: String, required: true, trim: true },
@@ -29,6 +33,7 @@ const walletFundingSchema = new Schema(
     chainBlockHash: { type: String, trim: true },
     chainBlockNumber: { type: String, trim: true },
     chainCapacityShannons: { type: Number, min: 0 },
+    chainCapacityAtomic: atomicAmountField(),
     chainConfirmedAt: { type: Date },
     status: { type: String, enum: WALLET_FUNDING_STATUSES, required: true, default: 'pending', index: true },
     confirmedAt: { type: Date }

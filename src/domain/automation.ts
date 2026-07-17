@@ -94,8 +94,8 @@ export interface AutomationSafetyEnvelope {
   sessionId: string;
   appId: string;
   ownerWalletId: string;
-  currency: 'CKB';
-  maxAmountMinor: number;
+  assetId: AssetId;
+  maxAmountAtomic: AtomicAmount;
   expiresAt?: Date;
   allowAutomation: boolean;
 }
@@ -105,11 +105,13 @@ export function validateAutomationSafetyEnvelope(envelope: AutomationSafetyEnvel
     throw new Error('Automation must be explicitly enabled for this FiberPass session.');
   }
 
-  if (!Number.isSafeInteger(envelope.maxAmountMinor) || envelope.maxAmountMinor <= 0) {
-    throw new Error('Automation max amount must be a positive minor-unit integer.');
+  if (parseAtomicAmount(envelope.maxAmountAtomic) <= 0n) {
+    throw new Error('Automation max amount must be a positive atomic-unit integer string.');
   }
 
   if (envelope.expiresAt && envelope.expiresAt.getTime() <= Date.now()) {
     throw new Error('Automation cannot run against an expired FiberPass session.');
   }
 }
+import type { AssetId } from './payment.js';
+import { parseAtomicAmount, type AtomicAmount } from '../lib/money.js';

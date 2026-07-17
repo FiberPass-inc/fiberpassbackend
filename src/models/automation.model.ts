@@ -5,6 +5,7 @@ import {
   PAYMENT_JOB_STATUSES,
   RECIPIENT_STATUSES
 } from '../domain/automation.js';
+import { assetIdField, atomicAmountField, moneyContractVersionField } from './moneyFields.js';
 
 const MONEY_MIN_MINOR = 1;
 const DEFAULT_CURRENCY = 'CKB';
@@ -43,7 +44,10 @@ const invoiceSchema = new Schema(
     batchId: { type: String, index: true },
     amount: { type: Number, required: true, min: 0 },
     amountMinor: { type: Number, required: true, min: MONEY_MIN_MINOR },
+    amountAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: DEFAULT_CURRENCY },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     status: { type: String, enum: AUTOMATION_PAYMENT_STATUSES, required: true, default: 'draft', index: true },
     type: { type: String, trim: true, default: 'Invoice payment' },
     description: { type: String, trim: true, default: '' },
@@ -88,7 +92,10 @@ const paymentJobSchema = new Schema(
     batchId: { type: String, index: true },
     amount: { type: Number, required: true, min: 0 },
     amountMinor: { type: Number, required: true, min: MONEY_MIN_MINOR },
+    amountAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: DEFAULT_CURRENCY },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     status: { type: String, enum: PAYMENT_JOB_STATUSES, required: true, default: 'queued', index: true },
     idempotencyKey: { type: String, trim: true },
     lockedAt: { type: Date, index: true },
@@ -127,7 +134,10 @@ const paymentBatchSchema = new Schema(
     idempotencyKey: { type: String, trim: true },
     totalAmount: { type: Number, required: true, min: 0, default: 0 },
     totalAmountMinor: { type: Number, required: true, min: 0, default: 0 },
+    totalAmountAtomic: atomicAmountField(),
     currency: { type: String, required: true, default: DEFAULT_CURRENCY },
+    assetId: assetIdField(),
+    moneyContractVersion: moneyContractVersionField(),
     invoiceCount: { type: Number, required: true, min: 0, default: 0 },
     paidCount: { type: Number, required: true, min: 0, default: 0 },
     failedCount: { type: Number, required: true, min: 0, default: 0 },

@@ -11,6 +11,7 @@ assert.equal(live.body.alive, true);
 assert.equal(live.headers['cache-control'], 'no-store');
 assert.equal(live.headers['x-content-type-options'], 'nosniff');
 assert.match(live.headers['content-security-policy'], /default-src 'none'/);
+assert.equal(live.headers['x-fiberpass-contract-version'], '1.0');
 
 const disabledGetCommand = await request(app).get('/cron/payment-worker').expect(405);
 assert.equal(disabledGetCommand.headers.allow, 'POST');

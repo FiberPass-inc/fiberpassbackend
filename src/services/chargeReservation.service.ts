@@ -1,4 +1,6 @@
 import type { FilterQuery } from 'mongoose';
+import { assetIdForLegacyCurrency } from '../domain/payment.js';
+import { legacyMinorToAtomicAmount } from '../lib/money.js';
 import { ChargeAttemptModel, type ChargeAttemptRecord } from '../models/chargeAttempt.model.js';
 import { ChargeDailyCounterModel } from '../models/chargeDailyCounter.model.js';
 import { SessionModel, type SessionRecord } from '../models/session.model.js';
@@ -191,7 +193,10 @@ export async function reserveChargeAttempt(input: ReserveChargeAttemptInput): Pr
         serviceReference: input.serviceReference,
         amount: input.amount,
         amountMinor: input.amountMinor,
+        amountAtomic: legacyMinorToAtomicAmount(input.amountMinor),
         currency: input.currency,
+        assetId: assetIdForLegacyCurrency(input.currency),
+        moneyContractVersion: 2,
         type: input.type,
         status: 'pending',
         reserveStatus: 'reserved',

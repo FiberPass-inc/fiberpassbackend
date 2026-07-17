@@ -22,6 +22,8 @@ Architecture decisions are indexed in [docs/adr/README.md](docs/adr/README.md).
 The separation between Bitcoin/Lightning, CKB/Fiber, and stablecoin grant work
 is documented in
 [docs/grant-work-packages.md](docs/grant-work-packages.md).
+The exact atomic-unit API contract and v1 migration behavior are documented in
+[docs/api-money-contract-v2.md](docs/api-money-contract-v2.md).
 
 ## Stack
 
@@ -29,7 +31,8 @@ is documented in
 - MongoDB + Mongoose
 - JoyID challenge-response auth
 - Server-Sent Events for live dashboard updates
-- Integer minor-unit accounting for money values
+- Exact atomic-unit string contracts with checked `bigint` arithmetic; numeric
+  minor-unit fields remain only as the CKB/Fiber v1 compatibility projection
 - Fiber Network JSON-RPC provider only
 - Rate limiting, audit logs, request IDs, and production env validation
 
@@ -73,7 +76,9 @@ Vault lock-script drafts live in `lockscripts/`. The current `fiberpass-vault-lo
 
 ## Core Endpoints
 
-All product endpoints are available at their current paths and under `/v1` aliases.
+Product endpoints are available at their current paths and under `/v1` aliases
+for legacy clients. `/v2` aliases expose the additive exact-money contract; see
+[docs/api-money-contract-v2.md](docs/api-money-contract-v2.md).
 
 - `GET /health/live`
 - `GET /health/ready`

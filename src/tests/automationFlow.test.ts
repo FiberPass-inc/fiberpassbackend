@@ -8,6 +8,8 @@ import {
   isFinalPaymentJobStatus,
   validateAutomationSafetyEnvelope
 } from '../domain/automation.js';
+import { asAssetId } from '../domain/payment.js';
+import { asAtomicAmount } from '../lib/money.js';
 import {
   InvoiceModel,
   PaymentBatchModel,
@@ -49,8 +51,8 @@ assert.doesNotThrow(() => validateAutomationSafetyEnvelope({
   sessionId: 'fp_pass_test',
   appId: 'fp_app_test',
   ownerWalletId: 'ckt1owner',
-  currency: 'CKB',
-  maxAmountMinor: 1,
+  assetId: asAssetId('ckb:ckb'),
+  maxAmountAtomic: asAtomicAmount('1'),
   allowAutomation: true,
   expiresAt: new Date(Date.now() + 60_000)
 }));
@@ -59,8 +61,8 @@ assert.throws(() => validateAutomationSafetyEnvelope({
   sessionId: 'fp_pass_test',
   appId: 'fp_app_test',
   ownerWalletId: 'ckt1owner',
-  currency: 'CKB',
-  maxAmountMinor: 1,
+  assetId: asAssetId('ckb:ckb'),
+  maxAmountAtomic: asAtomicAmount('1'),
   allowAutomation: false
 }), /explicitly enabled/);
 
